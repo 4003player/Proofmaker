@@ -360,8 +360,62 @@ function getToday() {
   return String(d.getMonth()+1).padStart(2,'0') + '/' + String(d.getDate()).padStart(2,'0') + '/' + d.getFullYear();
 }
 
+function findTrimBox(uint8Array) {
+  // Search raw PDF bytes for /TrimBox [x1 y1 x2 y2] (points, 72 per inch)
+  var target = [0x2F,0x54,0x72,0x69,0x6D,0x42,0x6F,0x78]; // "/TrimBox"
+  var results = [];
+  var searchLen = Math.min(uint8Array.length, 3 * 1024 * 1024); // first 3MB
+  for (var i = 0; i < searchLen - 60; i++) {
+    var hit = true;
+    for (var j = 0; j < target.length; j++) {
+      if (uint8Array[i + j] !== target[j]) { hit = false; break; }
+    }
+    if (!hit) continue;
+    var chunk = '';
+    for (var k = i + target.length; k < Math.min(i + target.length + 100, uint8Array.length); k++) {
+      chunk += String.fromCharCode(uint8Array[k]);
+    }
+    var m = chunk.match(/\s*\[\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s*\]/);
+    if (m) {
+      var tw = Math.abs(parseFloat(m[3]) - parseFloat(m[1])) / 72;
+      var th = Math.abs(parseFloat(m[4]) - parseFloat(m[2])) / 72;
+      // Skip if basically same as a previous result (duplicate entries)
+      var isDupe = results.some(function(r) {
+        return Math.abs(r.widthIn - tw) < 0.01 && Math.abs(r.heightIn - th) < 0.01;
+      });
+      if (!isDupe) results.push({ widthIn: tw, heightIn: th });
+    }
+  }
+  // Also search last 1MB if file is large (cross-ref tables can be at end)
+  if (uint8Array.length > searchLen) {
+    var tailStart = uint8Array.length - 1024 * 1024;
+    for (var i = tailStart; i < uint8Array.length - 60; i++) {
+      var hit = true;
+      for (var j = 0; j < target.length; j++) {
+        if (uint8Array[i + j] !== target[j]) { hit = false; break; }
+      }
+      if (!hit) continue;
+      var chunk = '';
+      for (var k = i + target.length; k < Math.min(i + target.length + 100, uint8Array.length); k++) {
+        chunk += String.fromCharCode(uint8Array[k]);
+      }
+      var m = chunk.match(/\s*\[\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s*\]/);
+      if (m) {
+        var tw = Math.abs(parseFloat(m[3]) - parseFloat(m[1])) / 72;
+        var th = Math.abs(parseFloat(m[4]) - parseFloat(m[2])) / 72;
+        var isDupe = results.some(function(r) {
+          return Math.abs(r.widthIn - tw) < 0.01 && Math.abs(r.heightIn - th) < 0.01;
+        });
+        if (!isDupe) results.push({ widthIn: tw, heightIn: th });
+      }
+    }
+  }
+  return results.length > 0 ? results[0] : null;
+}
+
 function renderPdfPageToImage(file, pageNum) {
   return file.arrayBuffer().then(function(arrayBuf) {
+    var trimBox = findTrimBox(new Uint8Array(arrayBuf));
     return pdfjsLib.getDocument({ data: arrayBuf }).promise.then(function(pdf) {
       return pdf.getPage(pageNum).then(function(page) {
         var vp = page.getViewport({ scale: 1.0 });
@@ -412,7 +466,7 @@ function renderPdfPageToImage(file, pageNum) {
           var imgDataUrl = finalCanvas.toDataURL('image/jpeg', 0.82);
           var totalPages = pdf.numPages;
           pdf.destroy();
-          return { imgDataUrl: imgDataUrl, widthIn: widthIn, heightIn: heightIn, hasWhiteEdges: hasWhiteEdges, totalPages: totalPages };
+          return { imgDataUrl: imgDataUrl, widthIn: widthIn, heightIn: heightIn, hasWhiteEdges: hasWhiteEdges, totalPages: totalPages, trimBox: trimBox };
         });
       });
     });
@@ -420,7 +474,7 @@ function renderPdfPageToImage(file, pageNum) {
 }
 
 // ── Draw one proof page onto jsPDF ──
-function drawProofPage(doc, img, opts) {
+function drawProofPage(doc, frontImg, opts) {
   var PW = 11, PH = 8.5;
   var M = 0.5;
   var usableW = PW - 2*M;
@@ -465,7 +519,7 @@ function drawProofPage(doc, img, opts) {
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(10);
     doc.setTextColor(BLACK);
-    doc.text(value || '—', rpX, y + 0.28);
+    doc.text(value || '\u2014', rpX, y + 0.28);
     doc.setDrawColor(LGRAY);
     doc.setLineWidth(0.004);
     doc.line(rpX, y + 0.36, rpX + rpW, y + 0.36);
@@ -477,16 +531,32 @@ function drawProofPage(doc, img, opts) {
   field('Material', opts.substrate);
   field('Quantity', opts.qty);
   field('Print', opts.printType);
-  field('Finishing', opts.finishing || '—');
+  field('Finishing', opts.finishing || '\u2014');
 
   var scale = parseFloat(opts.scale) || 1;
-  var actualW = img.widthIn / scale;
-  var actualH = img.heightIn / scale;
+
+  // Use trim dimensions when available, otherwise full page dims
+  var hasTrim = frontImg.trimBox && (
+    Math.abs(frontImg.trimBox.widthIn - frontImg.widthIn) > 0.05 ||
+    Math.abs(frontImg.trimBox.heightIn - frontImg.heightIn) > 0.05
+  );
+  var displayW = hasTrim ? frontImg.trimBox.widthIn : frontImg.widthIn;
+  var displayH = hasTrim ? frontImg.trimBox.heightIn : frontImg.heightIn;
+  var actualW = displayW / scale;
+  var actualH = displayH / scale;
 
   if (scale !== 1) {
-    field('File Scale', '1/' + Math.round(1/scale) + '  (file: ' + img.widthIn.toFixed(2) + '" × ' + img.heightIn.toFixed(2) + '")');
+    field('File Scale', '1/' + Math.round(1/scale) + '  (file: ' + frontImg.widthIn.toFixed(2) + '" \u00d7 ' + frontImg.heightIn.toFixed(2) + '")');
   }
-  field('Finished Size', fmtDim(actualW) + ' × ' + fmtDim(actualH));
+
+  if (hasTrim) {
+    var bleedH = ((frontImg.widthIn - frontImg.trimBox.widthIn) / 2).toFixed(3);
+    var bleedV = ((frontImg.heightIn - frontImg.trimBox.heightIn) / 2).toFixed(3);
+    field('Trim Size', fmtDim(actualW) + ' \u00d7 ' + fmtDim(actualH));
+    field('Bleed', bleedH + '" sides / ' + bleedV + '" top & bottom');
+  } else {
+    field('Finished Size', fmtDim(actualW) + ' \u00d7 ' + fmtDim(actualH));
+  }
 
   // Checkboxes
   y += 0.05;
@@ -499,7 +569,7 @@ function drawProofPage(doc, img, opts) {
   doc.rect(rpX, y, 0.12, 0.12);
   if (isSingle && !isDouble) {
     doc.setFont('helvetica', 'bold'); doc.setFontSize(10);
-    doc.text('×', rpX + 0.02, y + 0.1);
+    doc.text('\u00d7', rpX + 0.02, y + 0.1);
   }
   doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
   doc.text('Single-Sided', rpX + 0.16, y + 0.09);
@@ -507,62 +577,145 @@ function drawProofPage(doc, img, opts) {
   doc.rect(rpX + 1.4, y, 0.12, 0.12);
   if (isDouble) {
     doc.setFont('helvetica', 'bold'); doc.setFontSize(10);
-    doc.text('×', rpX + 1.42, y + 0.1);
+    doc.text('\u00d7', rpX + 1.42, y + 0.1);
   }
   doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
   doc.text('Double-Sided', rpX + 1.56, y + 0.09);
 
-  // ── Artwork ──
+  // ══════════════════════════════════════════════════
+  // ── Artwork Section ──
+  // ══════════════════════════════════════════════════
   var dimM = 0.35;
-  var availW = artW - dimM;
-  var availH = artH - dimM - 0.3;
+  var backImg = opts.backImg || null;
 
-  var imgAspect = img.widthIn / img.heightIn;
-  var drawW = availW;
-  var drawH = drawW / imgAspect;
-  if (drawH > availH) { drawH = availH; drawW = drawH * imgAspect; }
+  if (backImg) {
+    // ── DUAL IMAGE LAYOUT (4/4 front + back) ──
+    var gap = 0.2;
+    var singleSlotW = (artW - dimM - gap) / 2;
+    var availH_dual = artH - dimM - 0.55;
+    var imgAspect = frontImg.widthIn / frontImg.heightIn;
 
-  var artX = M;
-  var artY = M + 0.25 + (availH - drawH) / 2;
+    var drawW = singleSlotW;
+    var drawH = drawW / imgAspect;
+    if (drawH > availH_dual) { drawH = availH_dual; drawW = drawH * imgAspect; }
 
-  doc.addImage(img.imgDataUrl, 'JPEG', artX, artY, drawW, drawH);
+    var frontX = M + dimM;
+    var artY_top = M + dimM + 0.1;
+    var centerY = artY_top + (availH_dual - drawH) / 2;
+    var backX = frontX + drawW + gap;
 
-  // Cyan border for white edges
-  if (img.hasWhiteEdges) {
-    doc.setDrawColor(ACCENT);
-    doc.setLineWidth(0.007);
-    doc.rect(artX, artY, drawW, drawH);
+    // Front image
+    doc.addImage(frontImg.imgDataUrl, 'JPEG', frontX, centerY, drawW, drawH);
+    if (frontImg.hasWhiteEdges) {
+      doc.setDrawColor(ACCENT); doc.setLineWidth(0.007);
+      doc.rect(frontX, centerY, drawW, drawH);
+    }
+
+    // Back image
+    doc.addImage(backImg.imgDataUrl, 'JPEG', backX, centerY, drawW, drawH);
+    if (backImg.hasWhiteEdges) {
+      doc.setDrawColor(ACCENT); doc.setLineWidth(0.007);
+      doc.rect(backX, centerY, drawW, drawH);
+    }
+
+    // ── FRONT / BACK labels ──
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(8);
+    doc.setTextColor(GRAY);
+    doc.text('FRONT', frontX + drawW/2, centerY + drawH + 0.16, { align: 'center' });
+    doc.text('BACK', backX + drawW/2, centerY + drawH + 0.16, { align: 'center' });
+
+    // ── Dimension arrows (above front image for width, right of back image for height) ──
+    doc.setDrawColor(BLACK); doc.setLineWidth(0.007);
+    var arrLen = 0.05;
+
+    // Horizontal (above front image)
+    var dimYT = centerY - 0.14;
+    doc.line(frontX, dimYT, frontX + drawW, dimYT);
+    doc.line(frontX, dimYT, frontX + arrLen, dimYT - arrLen/2);
+    doc.line(frontX, dimYT, frontX + arrLen, dimYT + arrLen/2);
+    doc.line(frontX + drawW, dimYT, frontX + drawW - arrLen, dimYT - arrLen/2);
+    doc.line(frontX + drawW, dimYT, frontX + drawW - arrLen, dimYT + arrLen/2);
+    doc.line(frontX, dimYT - 0.08, frontX, dimYT + 0.08);
+    doc.line(frontX + drawW, dimYT - 0.08, frontX + drawW, dimYT + 0.08);
+    doc.setFontSize(8); doc.setTextColor(BLACK);
+    doc.text(fmtDim(actualW), frontX + drawW/2, dimYT - 0.06, { align: 'center' });
+
+    // Vertical (right of back image)
+    var dimXR = backX + drawW + 0.14;
+    doc.line(dimXR, centerY, dimXR, centerY + drawH);
+    doc.line(dimXR, centerY, dimXR - arrLen/2, centerY + arrLen);
+    doc.line(dimXR, centerY, dimXR + arrLen/2, centerY + arrLen);
+    doc.line(dimXR, centerY + drawH, dimXR - arrLen/2, centerY + drawH - arrLen);
+    doc.line(dimXR, centerY + drawH, dimXR + arrLen/2, centerY + drawH - arrLen);
+    doc.line(dimXR - 0.08, centerY, dimXR + 0.08, centerY);
+    doc.line(dimXR - 0.08, centerY + drawH, dimXR + 0.08, centerY + drawH);
+    doc.saveGraphicsState();
+    doc.text(fmtDim(actualH), dimXR + 0.12, centerY + drawH/2, { angle: 90, align: 'center' });
+    doc.restoreGraphicsState();
+
+    // Source filenames
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(7);
+    doc.setTextColor(BLACK);
+    doc.text(opts.filename || '', frontX, centerY + drawH + 0.28);
+    if (opts.backFilename) {
+      doc.text(opts.backFilename, backX, centerY + drawH + 0.28);
+    }
+
+  } else {
+    // ── SINGLE IMAGE LAYOUT (original) ──
+    var availW = artW - dimM;
+    var availH_single = artH - dimM - 0.3;
+
+    var imgAspect = frontImg.widthIn / frontImg.heightIn;
+    var drawW = availW;
+    var drawH = drawW / imgAspect;
+    if (drawH > availH_single) { drawH = availH_single; drawW = drawH * imgAspect; }
+
+    var artX = M;
+    var artY = M + 0.25 + (availH_single - drawH) / 2;
+
+    doc.addImage(frontImg.imgDataUrl, 'JPEG', artX, artY, drawW, drawH);
+
+    // Cyan border for white edges
+    if (frontImg.hasWhiteEdges) {
+      doc.setDrawColor(ACCENT); doc.setLineWidth(0.007);
+      doc.rect(artX, artY, drawW, drawH);
+    }
+
+    // ── Dimension lines ──
+    doc.setDrawColor(BLACK); doc.setLineWidth(0.007);
+    var arrLen = 0.05;
+
+    // Horizontal (above)
+    var dimYT = artY - 0.14;
+    doc.line(artX, dimYT, artX + drawW, dimYT);
+    doc.line(artX, dimYT, artX + arrLen, dimYT - arrLen/2);
+    doc.line(artX, dimYT, artX + arrLen, dimYT + arrLen/2);
+    doc.line(artX + drawW, dimYT, artX + drawW - arrLen, dimYT - arrLen/2);
+    doc.line(artX + drawW, dimYT, artX + drawW - arrLen, dimYT + arrLen/2);
+    doc.line(artX, dimYT - 0.08, artX, dimYT + 0.08);
+    doc.line(artX + drawW, dimYT - 0.08, artX + drawW, dimYT + 0.08);
+    doc.setFontSize(8); doc.setTextColor(BLACK);
+    doc.text(fmtDim(actualW), artX + drawW/2, dimYT - 0.06, { align: 'center' });
+
+    // Vertical (right)
+    var dimXR = artX + drawW + 0.14;
+    doc.line(dimXR, artY, dimXR, artY + drawH);
+    doc.line(dimXR, artY, dimXR - arrLen/2, artY + arrLen);
+    doc.line(dimXR, artY, dimXR + arrLen/2, artY + arrLen);
+    doc.line(dimXR, artY + drawH, dimXR - arrLen/2, artY + drawH - arrLen);
+    doc.line(dimXR, artY + drawH, dimXR + arrLen/2, artY + drawH - arrLen);
+    doc.line(dimXR - 0.08, artY, dimXR + 0.08, artY);
+    doc.line(dimXR - 0.08, artY + drawH, dimXR + 0.08, artY + drawH);
+    doc.saveGraphicsState();
+    doc.text(fmtDim(actualH), dimXR + 0.12, artY + drawH/2, { angle: 90, align: 'center' });
+    doc.restoreGraphicsState();
+
+    // Source filename (bold)
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(8);
+    doc.setTextColor(BLACK);
+    doc.text(opts.filename || '', M, artY + drawH + 0.2);
   }
-
-  // ── Dimension lines ──
-  doc.setDrawColor(BLACK);
-  doc.setLineWidth(0.007);
-  var arrLen = 0.05;
-
-  // Horizontal (above)
-  var dimYT = artY - 0.14;
-  doc.line(artX, dimYT, artX + drawW, dimYT);
-  doc.line(artX, dimYT, artX + arrLen, dimYT - arrLen/2);
-  doc.line(artX, dimYT, artX + arrLen, dimYT + arrLen/2);
-  doc.line(artX + drawW, dimYT, artX + drawW - arrLen, dimYT - arrLen/2);
-  doc.line(artX + drawW, dimYT, artX + drawW - arrLen, dimYT + arrLen/2);
-  doc.line(artX, dimYT - 0.08, artX, dimYT + 0.08);
-  doc.line(artX + drawW, dimYT - 0.08, artX + drawW, dimYT + 0.08);
-  doc.setFontSize(8); doc.setTextColor(BLACK);
-  doc.text(fmtDim(actualW), artX + drawW/2, dimYT - 0.06, { align: 'center' });
-
-  // Vertical (right)
-  var dimXR = artX + drawW + 0.14;
-  doc.line(dimXR, artY, dimXR, artY + drawH);
-  doc.line(dimXR, artY, dimXR - arrLen/2, artY + arrLen);
-  doc.line(dimXR, artY, dimXR + arrLen/2, artY + arrLen);
-  doc.line(dimXR, artY + drawH, dimXR - arrLen/2, artY + drawH - arrLen);
-  doc.line(dimXR, artY + drawH, dimXR + arrLen/2, artY + drawH - arrLen);
-  doc.line(dimXR - 0.08, artY, dimXR + 0.08, artY);
-  doc.line(dimXR - 0.08, artY + drawH, dimXR + 0.08, artY + drawH);
-  doc.saveGraphicsState();
-  doc.text(fmtDim(actualH), dimXR + 0.12, artY + drawH/2, { angle: 90, align: 'center' });
-  doc.restoreGraphicsState();
 
   // ── Cut line legend ──
   doc.setDrawColor(ACCENT);
@@ -572,10 +725,12 @@ function drawProofPage(doc, img, opts) {
   doc.setTextColor(GRAY);
   doc.text('Cut Line', M + 0.16, PH - M - 0.02);
 
-  // ── Source filename (bold) ──
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(8);
-  doc.setTextColor(BLACK);
-  doc.text(opts.filename || '', M, artY + drawH + 0.2);
+  // ── Trim box indicator ──
+  if (hasTrim) {
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(7);
+    doc.setTextColor(GRAY);
+    doc.text('\u2702 Trim detected from PDF', M + 0.7, PH - M - 0.02);
+  }
 
   // ── Page label ──
   if (opts.pageLabel) {
@@ -642,50 +797,85 @@ window.generateProof = function() {
   }
 
   function processPages() {
-    var totalSheets = pagePlan.length;
-    if (totalSheets === 0) {
+    if (pagePlan.length === 0) {
       alert('No valid PDF pages found.');
       progressOverlay.classList.remove('active');
       return;
     }
 
+    // Detect double-sided from print type
+    var pt = printType.toLowerCase();
+    var isDoubleSided = ['4/4','1/1','2/2','6/6','double'].some(function(x) { return pt.indexOf(x) >= 0; });
+
+    // Build sheet plan — pair consecutive pages for double-sided jobs
+    var sheetPlan = [];
+    if (isDoubleSided) {
+      for (var i = 0; i < pagePlan.length; i += 2) {
+        sheetPlan.push({
+          front: pagePlan[i],
+          back: (i + 1 < pagePlan.length) ? pagePlan[i + 1] : null
+        });
+      }
+    } else {
+      pagePlan.forEach(function(item) {
+        sheetPlan.push({ front: item, back: null });
+      });
+    }
+
+    var totalSheets = sheetPlan.length;
     progressStatus.textContent = 'Generating ' + totalSheets + ' proof sheet' + (totalSheets > 1 ? 's' : '') + '\u2026';
 
     var doc = new jsPDF({ orientation: 'landscape', unit: 'in', format: 'letter' });
     var sheetIdx = 0;
 
     function renderNextSheet() {
-      if (sheetIdx >= pagePlan.length) {
+      if (sheetIdx >= sheetPlan.length) {
         finishPdf();
         return;
       }
 
-      var item = pagePlan[sheetIdx];
+      var sheet = sheetPlan[sheetIdx];
       var pct = Math.round((sheetIdx / totalSheets) * 100);
       progressBar.style.width = pct + '%';
-      progressDetail.textContent = 'Page ' + (sheetIdx+1) + ' of ' + totalSheets + ': ' + item.filename;
+      progressDetail.textContent = 'Sheet ' + (sheetIdx+1) + ' of ' + totalSheets + ': ' + sheet.front.filename;
 
       if (sheetIdx > 0) doc.addPage('letter', 'landscape');
 
-      renderPdfPageToImage(item.file, item.pageNum).then(function(img) {
-        var pageLabel = '';
-        if (totalSheets > 1) {
-          if (item.totalPages > 1) {
-            pageLabel = item.filename + ' (pg ' + item.pageNum + '/' + item.totalPages + ')  \u2014  Sheet ' + (sheetIdx+1) + ' of ' + totalSheets;
-          } else {
-            pageLabel = item.filename + '  \u2014  Sheet ' + (sheetIdx+1) + ' of ' + totalSheets;
+      // Render front page
+      renderPdfPageToImage(sheet.front.file, sheet.front.pageNum).then(function(frontImg) {
+        function finishSheet(backImg) {
+          var pageLabel = '';
+          if (totalSheets > 1) {
+            var desc = sheet.front.filename;
+            if (sheet.front.totalPages > 1) {
+              desc += ' (pg ' + sheet.front.pageNum + '/' + sheet.front.totalPages + ')';
+            }
+            pageLabel = desc + '  \u2014  Sheet ' + (sheetIdx+1) + ' of ' + totalSheets;
           }
+
+          drawProofPage(doc, frontImg, {
+            clientName: clientName, jobNumber: jobNumber, date: date, qty: qty,
+            substrate: substrate, printType: printType, scale: scale, finishing: finishing,
+            filename: sheet.front.filename, pageLabel: pageLabel, branded: branded,
+            backImg: backImg,
+            backFilename: sheet.back ? sheet.back.filename : ''
+          });
+
+          sheetIdx++;
+          setTimeout(renderNextSheet, 10);
         }
 
-        drawProofPage(doc, img, {
-          clientName: clientName, jobNumber: jobNumber, date: date, qty: qty,
-          substrate: substrate, printType: printType, scale: scale, finishing: finishing,
-          filename: item.filename, pageLabel: pageLabel, branded: branded
-        });
-
-        sheetIdx++;
-        // Use setTimeout to let the browser breathe between pages
-        setTimeout(renderNextSheet, 10);
+        // If double-sided and back page exists, render it too
+        if (sheet.back) {
+          renderPdfPageToImage(sheet.back.file, sheet.back.pageNum).then(function(backImg) {
+            finishSheet(backImg);
+          }).catch(function(e) {
+            console.error('Error rendering back page', e);
+            finishSheet(null);
+          });
+        } else {
+          finishSheet(null);
+        }
       }).catch(function(e) {
         console.error('Error rendering page', sheetIdx, e);
         sheetIdx++;
