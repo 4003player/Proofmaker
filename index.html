@@ -903,4 +903,114 @@ window.generateProof = function() {
     if (isDoubleSided) {
       for (var i = 0; i < pagePlan.length; i += 2) {
         sheetPlan.push({
-          front: pagePlan[
+          front: pagePlan[i],
+          back: (i + 1 < pagePlan.length) ? pagePlan[i + 1] : null
+        });
+      }
+    } else {
+      pagePlan.forEach(function(item) {
+        sheetPlan.push({ front: item, back: null });
+      });
+    }
+
+    var totalSheets = sheetPlan.length;
+    progressStatus.textContent = 'Generating ' + totalSheets + ' proof sheet' + (totalSheets > 1 ? 's' : '') + '\u2026';
+
+    var doc = new jsPDF({ orientation: 'landscape', unit: 'in', format: 'letter' });
+    var sheetIdx = 0;
+
+    function renderNextSheet() {
+      if (sheetIdx >= sheetPlan.length) {
+        finishPdf();
+        return;
+      }
+
+      var sheet = sheetPlan[sheetIdx];
+      var pct = Math.round((sheetIdx / totalSheets) * 100);
+      progressBar.style.width = pct + '%';
+      progressDetail.textContent = 'Sheet ' + (sheetIdx+1) + ' of ' + totalSheets + ': ' + sheet.front.filename;
+
+      if (sheetIdx > 0) doc.addPage('letter', 'landscape');
+
+      // Render front page
+      renderPdfPageToImage(sheet.front.file, sheet.front.pageNum).then(function(frontImg) {
+        function finishSheet(backImg) {
+          var pageLabel = '';
+          if (totalSheets > 1) {
+            var desc = sheet.front.filename;
+            if (sheet.front.totalPages > 1) {
+              desc += ' (pg ' + sheet.front.pageNum + '/' + sheet.front.totalPages + ')';
+            }
+            pageLabel = desc + '  \u2014  Sheet ' + (sheetIdx+1) + ' of ' + totalSheets;
+          }
+
+          drawProofPage(doc, frontImg, {
+            clientName: clientName, jobNumber: jobNumber, date: date, qty: qty,
+            substrate: substrate, printType: printType, scale: scale, finishing: finishing,
+            filename: sheet.front.filename, pageLabel: pageLabel, branded: branded,
+            backImg: backImg,
+            backFilename: sheet.back ? sheet.back.filename : ''
+          });
+
+          sheetIdx++;
+          setTimeout(renderNextSheet, 10);
+        }
+
+        // If double-sided and back page exists, render it too
+        if (sheet.back) {
+          renderPdfPageToImage(sheet.back.file, sheet.back.pageNum).then(function(backImg) {
+            finishSheet(backImg);
+          }).catch(function(e) {
+            console.error('Error rendering back page', e);
+            finishSheet(null);
+          });
+        } else {
+          finishSheet(null);
+        }
+      }).catch(function(e) {
+        console.error('Error rendering page', sheetIdx, e);
+        sheetIdx++;
+        setTimeout(renderNextSheet, 10);
+      });
+    }
+
+    function finishPdf() {
+      progressBar.style.width = '100%';
+      progressDetail.textContent = 'Saving PDF\u2026';
+
+      var safeName = [jobNumber, clientName, 'proof'].filter(Boolean).join(' ') + '.pdf';
+      var blob = doc.output('blob');
+      var url = URL.createObjectURL(blob);
+
+      var downloadLink = document.getElementById('download-link');
+      downloadLink.href = url;
+      downloadLink.download = safeName;
+
+      document.getElementById('preview-frame').src = url;
+
+      progressOverlay.classList.remove('active');
+      document.getElementById('form-section').style.display = 'none';
+      document.getElementById('result-section').classList.add('active');
+    }
+
+    renderNextSheet();
+  }
+
+  readNextFile();
+};
+
+window.resetForm = function() {
+  document.getElementById('result-section').classList.remove('active');
+  document.getElementById('form-section').style.display = 'block';
+  pdfFiles = [];
+  renderFileList();
+};
+
+} catch(err) {
+  alert('Proof Sheet Generator error: ' + err.message);
+  console.error(err);
+}
+}); // end DOMContentLoaded
+</script>
+</body>
+</html>
