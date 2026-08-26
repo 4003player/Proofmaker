@@ -360,6 +360,73 @@ function getToday() {
   return String(d.getMonth()+1).padStart(2,'0') + '/' + String(d.getDate()).padStart(2,'0') + '/' + d.getFullYear();
 }
 
+// ── Spot color name → display color mapping ──
+// These are the conventional colors designers use for die/finishing lines
+var SPOT_COLOR_MAP = {
+  'cutcontour': { color: '#FF0000', label: 'CutContour' },
+  'thrucut': { color: '#FF0000', label: 'ThruCut' },
+  'kisscut': { color: '#00FF00', label: 'KissCut' },
+  'die': { color: '#FF00FF', label: 'Die' },
+  'dieline': { color: '#FF00FF', label: 'Die Line' },
+  'diecut': { color: '#FF00FF', label: 'DieCut' },
+  'score': { color: '#00FF00', label: 'Score' },
+  'crease': { color: '#00FF00', label: 'Crease' },
+  'fold': { color: '#0000FF', label: 'Fold' },
+  'perf': { color: '#FF8800', label: 'Perf' },
+  'perfcut': { color: '#FF8800', label: 'PerfCut' },
+  'trim': { color: '#FF0000', label: 'Trim' },
+  'cutter': { color: '#FF0000', label: 'Cutter' },
+  'cut': { color: '#FF0000', label: 'Cut' },
+  'safetyline': { color: '#00CCFF', label: 'Safety Line' },
+  'bleed': { color: '#FF6600', label: 'Bleed' }
+};
+
+function findSpotColors(uint8Array) {
+  // Search raw PDF bytes for /Separation /Name entries (spot color definitions)
+  // Pattern: /Separation /<Name> or /Separation (<Name>)
+  var sep = [0x2F,0x53,0x65,0x70,0x61,0x72,0x61,0x74,0x69,0x6F,0x6E]; // "/Separation"
+  var found = [];
+  var searchLen = Math.min(uint8Array.length, 5 * 1024 * 1024); // first 5MB
+
+  function searchRange(start, end) {
+    for (var i = start; i < end - 80; i++) {
+      var hit = true;
+      for (var j = 0; j < sep.length; j++) {
+        if (uint8Array[i + j] !== sep[j]) { hit = false; break; }
+      }
+      if (!hit) continue;
+      // Read up to 120 bytes after "/Separation"
+      var chunk = '';
+      for (var k = i + sep.length; k < Math.min(i + sep.length + 120, uint8Array.length); k++) {
+        chunk += String.fromCharCode(uint8Array[k]);
+      }
+      // Match /Name or (Name) after whitespace
+      var m = chunk.match(/\s+\/?([A-Za-z_][\w\s]*?)(?:\s|\/|\[|\])/) ||
+              chunk.match(/\s+\(([^)]+)\)/);
+      if (m) {
+        var rawName = m[1].trim();
+        // Normalize: lowercase, strip spaces/underscores for matching
+        var key = rawName.toLowerCase().replace(/[\s_-]/g, '');
+        if (SPOT_COLOR_MAP[key] && !found.some(function(f) { return f.key === key; })) {
+          found.push({
+            key: key,
+            name: SPOT_COLOR_MAP[key].label,
+            color: SPOT_COLOR_MAP[key].color,
+            rawName: rawName
+          });
+        }
+      }
+    }
+  }
+
+  searchRange(0, searchLen);
+  // Also search tail for large files
+  if (uint8Array.length > searchLen) {
+    searchRange(uint8Array.length - 1024 * 1024, uint8Array.length);
+  }
+  return found;
+}
+
 function findTrimBox(uint8Array) {
   // Search raw PDF bytes for /TrimBox [x1 y1 x2 y2] (points, 72 per inch)
   var target = [0x2F,0x54,0x72,0x69,0x6D,0x42,0x6F,0x78]; // "/TrimBox"
@@ -415,7 +482,9 @@ function findTrimBox(uint8Array) {
 
 function renderPdfPageToImage(file, pageNum) {
   return file.arrayBuffer().then(function(arrayBuf) {
-    var trimBox = findTrimBox(new Uint8Array(arrayBuf));
+    var rawBytes = new Uint8Array(arrayBuf);
+    var trimBox = findTrimBox(rawBytes);
+    var spotColors = findSpotColors(rawBytes);
     return pdfjsLib.getDocument({ data: arrayBuf }).promise.then(function(pdf) {
       return pdf.getPage(pageNum).then(function(page) {
         var vp = page.getViewport({ scale: 1.0 });
@@ -466,7 +535,7 @@ function renderPdfPageToImage(file, pageNum) {
           var imgDataUrl = finalCanvas.toDataURL('image/jpeg', 0.82);
           var totalPages = pdf.numPages;
           pdf.destroy();
-          return { imgDataUrl: imgDataUrl, widthIn: widthIn, heightIn: heightIn, hasWhiteEdges: hasWhiteEdges, totalPages: totalPages, trimBox: trimBox };
+          return { imgDataUrl: imgDataUrl, widthIn: widthIn, heightIn: heightIn, hasWhiteEdges: hasWhiteEdges, totalPages: totalPages, trimBox: trimBox, spotColors: spotColors };
         });
       });
     });
@@ -717,19 +786,41 @@ function drawProofPage(doc, frontImg, opts) {
     doc.text(opts.filename || '', M, artY + drawH + 0.2);
   }
 
-  // ── Cut line legend ──
-  doc.setDrawColor(ACCENT);
-  doc.setLineWidth(0.014);
-  doc.rect(M, PH - M - 0.1, 0.12, 0.12);
-  doc.setFont('helvetica', 'normal'); doc.setFontSize(7);
-  doc.setTextColor(GRAY);
-  doc.text('Cut Line', M + 0.16, PH - M - 0.02);
+  // ── Die / Finishing Line Legend ──
+  var spots = frontImg.spotColors || [];
+  var legendX = M;
+  var legendY = PH - M - 0.1;
+
+  if (spots.length > 0) {
+    // Draw a legend swatch for each detected spot color
+    var xCursor = legendX;
+    for (var si = 0; si < spots.length; si++) {
+      doc.setDrawColor(spots[si].color);
+      doc.setLineWidth(0.014);
+      doc.rect(xCursor, legendY, 0.12, 0.12);
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(7);
+      doc.setTextColor(GRAY);
+      doc.text(spots[si].name, xCursor + 0.16, legendY + 0.1);
+      // Measure text width and advance cursor
+      var labelW = doc.getTextWidth(spots[si].name);
+      xCursor += 0.16 + labelW + 0.2;
+    }
+  } else {
+    // No spot colors detected — show default cyan cut line legend
+    doc.setDrawColor(ACCENT);
+    doc.setLineWidth(0.014);
+    doc.rect(legendX, legendY, 0.12, 0.12);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(7);
+    doc.setTextColor(GRAY);
+    doc.text('Cut Line', legendX + 0.16, legendY + 0.1);
+  }
 
   // ── Trim box indicator ──
   if (hasTrim) {
     doc.setFont('helvetica', 'normal'); doc.setFontSize(7);
     doc.setTextColor(GRAY);
-    doc.text('\u2702 Trim detected from PDF', M + 0.7, PH - M - 0.02);
+    var trimX = (spots.length > 0) ? legendX : M + 0.7;
+    doc.text('\u2702 Trim detected from PDF', PW/2, legendY + 0.1, { align: 'center' });
   }
 
   // ── Page label ──
@@ -812,114 +903,4 @@ window.generateProof = function() {
     if (isDoubleSided) {
       for (var i = 0; i < pagePlan.length; i += 2) {
         sheetPlan.push({
-          front: pagePlan[i],
-          back: (i + 1 < pagePlan.length) ? pagePlan[i + 1] : null
-        });
-      }
-    } else {
-      pagePlan.forEach(function(item) {
-        sheetPlan.push({ front: item, back: null });
-      });
-    }
-
-    var totalSheets = sheetPlan.length;
-    progressStatus.textContent = 'Generating ' + totalSheets + ' proof sheet' + (totalSheets > 1 ? 's' : '') + '\u2026';
-
-    var doc = new jsPDF({ orientation: 'landscape', unit: 'in', format: 'letter' });
-    var sheetIdx = 0;
-
-    function renderNextSheet() {
-      if (sheetIdx >= sheetPlan.length) {
-        finishPdf();
-        return;
-      }
-
-      var sheet = sheetPlan[sheetIdx];
-      var pct = Math.round((sheetIdx / totalSheets) * 100);
-      progressBar.style.width = pct + '%';
-      progressDetail.textContent = 'Sheet ' + (sheetIdx+1) + ' of ' + totalSheets + ': ' + sheet.front.filename;
-
-      if (sheetIdx > 0) doc.addPage('letter', 'landscape');
-
-      // Render front page
-      renderPdfPageToImage(sheet.front.file, sheet.front.pageNum).then(function(frontImg) {
-        function finishSheet(backImg) {
-          var pageLabel = '';
-          if (totalSheets > 1) {
-            var desc = sheet.front.filename;
-            if (sheet.front.totalPages > 1) {
-              desc += ' (pg ' + sheet.front.pageNum + '/' + sheet.front.totalPages + ')';
-            }
-            pageLabel = desc + '  \u2014  Sheet ' + (sheetIdx+1) + ' of ' + totalSheets;
-          }
-
-          drawProofPage(doc, frontImg, {
-            clientName: clientName, jobNumber: jobNumber, date: date, qty: qty,
-            substrate: substrate, printType: printType, scale: scale, finishing: finishing,
-            filename: sheet.front.filename, pageLabel: pageLabel, branded: branded,
-            backImg: backImg,
-            backFilename: sheet.back ? sheet.back.filename : ''
-          });
-
-          sheetIdx++;
-          setTimeout(renderNextSheet, 10);
-        }
-
-        // If double-sided and back page exists, render it too
-        if (sheet.back) {
-          renderPdfPageToImage(sheet.back.file, sheet.back.pageNum).then(function(backImg) {
-            finishSheet(backImg);
-          }).catch(function(e) {
-            console.error('Error rendering back page', e);
-            finishSheet(null);
-          });
-        } else {
-          finishSheet(null);
-        }
-      }).catch(function(e) {
-        console.error('Error rendering page', sheetIdx, e);
-        sheetIdx++;
-        setTimeout(renderNextSheet, 10);
-      });
-    }
-
-    function finishPdf() {
-      progressBar.style.width = '100%';
-      progressDetail.textContent = 'Saving PDF\u2026';
-
-      var safeName = [jobNumber, clientName, 'proof'].filter(Boolean).join(' ') + '.pdf';
-      var blob = doc.output('blob');
-      var url = URL.createObjectURL(blob);
-
-      var downloadLink = document.getElementById('download-link');
-      downloadLink.href = url;
-      downloadLink.download = safeName;
-
-      document.getElementById('preview-frame').src = url;
-
-      progressOverlay.classList.remove('active');
-      document.getElementById('form-section').style.display = 'none';
-      document.getElementById('result-section').classList.add('active');
-    }
-
-    renderNextSheet();
-  }
-
-  readNextFile();
-};
-
-window.resetForm = function() {
-  document.getElementById('result-section').classList.remove('active');
-  document.getElementById('form-section').style.display = 'block';
-  pdfFiles = [];
-  renderFileList();
-};
-
-} catch(err) {
-  alert('Proof Sheet Generator error: ' + err.message);
-  console.error(err);
-}
-}); // end DOMContentLoaded
-</script>
-</body>
-</html>
+          front: pagePlan[
