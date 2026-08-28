@@ -1630,7 +1630,8 @@ function collectAllResolutions(pagePlan, scale) {
       var effDpi = Math.round(rm.dpi * (parseFloat(scale) || 1));
       results.push({ filename: item.filename, pixW: rm.pixW, pixH: rm.pixH, dpi: rm.dpi });
     } else {
-      // PDF: scan for embedded images
+      // PDF: use PDF.js operator list to find embedded image dimensions
+      // (raw byte scanning fails on compressed object streams)
       promises.push(
         item.file.arrayBuffer().then(function(buf) {
           var uint8 = new Uint8Array(buf);
@@ -1649,14 +1650,48 @@ function collectAllResolutions(pagePlan, scale) {
               var sc = parseFloat(scale) || 1;
               var printW = pageW / sc;
               var printH = pageH / sc;
-              var images = scanPdfImageResolutions(uint8, printW, printH);
-              images.forEach(function(img) {
-                results.push({
-                  filename: item.filename + (item.totalPages > 1 ? ' (pg ' + item.pageNum + ')' : ''),
-                  pixW: img.pixW, pixH: img.pixH, dpi: img.dpi
+
+              // Parse the page's operator list — works even with compressed streams
+              return page.getOperatorList().then(function(opList) {
+                var images = [];
+                for (var oi = 0; oi < opList.fnArray.length; oi++) {
+                  var fn = opList.fnArray[oi];
+                  var args = opList.argsArray[oi];
+                  var pw = 0, ph = 0;
+
+                  // paintImageXObject / paintJpegXObject: args = [objId, width, height]
+                  if ((fn === pdfjsLib.OPS.paintImageXObject || fn === pdfjsLib.OPS.paintJpegXObject) && args.length >= 3) {
+                    pw = args[1]; ph = args[2];
+                  }
+                  // Inline images: args = [imgData] where imgData has .width/.height
+                  else if (fn === pdfjsLib.OPS.paintInlineImageXObject && args[0]) {
+                    pw = args[0].width || 0; ph = args[0].height || 0;
+                  }
+
+                  if (pw >= 16 && ph >= 16) {
+                    var dpiW = pw / printW;
+                    var dpiH = ph / printH;
+                    var effDpi = Math.round(Math.min(dpiW, dpiH));
+                    var isDupe = images.some(function(im) { return im.pixW === pw && im.pixH === ph; });
+                    if (!isDupe) {
+                      images.push({ pixW: pw, pixH: ph, dpi: effDpi });
+                    }
+                  }
+                }
+
+                // Fallback: raw byte scanning for older/unusual PDFs
+                if (images.length === 0) {
+                  images = scanPdfImageResolutions(uint8, printW, printH);
+                }
+
+                images.forEach(function(img) {
+                  results.push({
+                    filename: item.filename + (item.totalPages > 1 ? ' (pg ' + item.pageNum + ')' : ''),
+                    pixW: img.pixW, pixH: img.pixH, dpi: img.dpi
+                  });
                 });
+                pdf.destroy();
               });
-              pdf.destroy();
             });
           });
         })
