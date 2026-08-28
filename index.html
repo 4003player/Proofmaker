@@ -984,6 +984,115 @@ function findSpotColors(uint8Array) {
   return found;
 }
 
+// ── Detect die line bounding box from PDF.js operator list ──
+// When spot colors indicate a die/cut line exists, walk the operator list
+// to find the largest spot-color closed path and return its bounding box.
+function detectDieLineFromOpList(opList, spotColors, viewport) {
+  var dieKeys = ['cutcontour','thrucut','die','dieline','diecut','trim','cutter','cut'];
+  var hasDieLine = spotColors.some(function(sc) { return dieKeys.indexOf(sc.key) >= 0; });
+  if (!hasDieLine) return null;
+
+  var OPS = pdfjsLib.OPS;
+
+  // CTM tracking (die line might be in a Form XObject with its own transform)
+  var ctmStack = [];
+  var ctm = [1, 0, 0, 1, 0, 0]; // identity
+
+  function mulMat(a, b) {
+    return [
+      a[0]*b[0] + a[2]*b[1],        a[1]*b[0] + a[3]*b[1],
+      a[0]*b[2] + a[2]*b[3],        a[1]*b[2] + a[3]*b[3],
+      a[0]*b[4] + a[2]*b[5] + a[4], a[1]*b[4] + a[3]*b[5] + a[5]
+    ];
+  }
+
+  function transformBbox(m, mm) {
+    var corners = [
+      [m[0]*mm[0] + m[2]*mm[2] + m[4], m[1]*mm[0] + m[3]*mm[2] + m[5]],
+      [m[0]*mm[1] + m[2]*mm[2] + m[4], m[1]*mm[1] + m[3]*mm[2] + m[5]],
+      [m[0]*mm[0] + m[2]*mm[3] + m[4], m[1]*mm[0] + m[3]*mm[3] + m[5]],
+      [m[0]*mm[1] + m[2]*mm[3] + m[4], m[1]*mm[1] + m[3]*mm[3] + m[5]]
+    ];
+    var xs = corners.map(function(c){ return c[0]; });
+    var ys = corners.map(function(c){ return c[1]; });
+    return [Math.min.apply(null,xs), Math.max.apply(null,xs),
+            Math.min.apply(null,ys), Math.max.apply(null,ys)];
+  }
+
+  var spotStrokeOn = false, spotFillOn = false;
+  var candidates = [];
+
+  for (var i = 0; i < opList.fnArray.length; i++) {
+    var fn = opList.fnArray[i];
+    var args = opList.argsArray[i];
+
+    // CTM tracking
+    if (fn === OPS.save || fn === OPS.beginGroup) {
+      ctmStack.push(ctm.slice());
+    } else if (fn === OPS.restore || fn === OPS.endGroup) {
+      if (ctmStack.length > 0) ctm = ctmStack.pop();
+    } else if (fn === OPS.transform) {
+      ctm = mulMat(ctm, args);
+    } else if (fn === OPS.paintFormXObjectBegin) {
+      ctmStack.push(ctm.slice());
+      if (args && args[0] && Array.isArray(args[0])) ctm = mulMat(ctm, args[0]);
+    } else if (fn === OPS.paintFormXObjectEnd) {
+      if (ctmStack.length > 0) ctm = ctmStack.pop();
+    }
+
+    // Spot color tracking: setStrokeColorN / setFillColorN = Separation/DeviceN
+    if (fn === OPS.setStrokeColorN) spotStrokeOn = true;
+    if (fn === OPS.setStrokeRGBColor || fn === OPS.setStrokeGray || fn === OPS.setStrokeCMYKColor) spotStrokeOn = false;
+    if (fn === OPS.setFillColorN) spotFillOn = true;
+    if (fn === OPS.setFillRGBColor || fn === OPS.setFillGray || fn === OPS.setFillCMYKColor) spotFillOn = false;
+
+    // Look for constructPath while a spot color is active
+    if (fn === OPS.constructPath && (spotStrokeOn || spotFillOn)) {
+      var subOps = args[0];
+      var minMax = args[2]; // [xMin, xMax, yMin, yMax]
+
+      // Must be a closed path (die lines are closed shapes, crop marks are open segments)
+      var isClosed = subOps.some(function(s) {
+        return s === OPS.closePath || s === OPS.rectangle;
+      });
+      if (!isClosed) continue;
+
+      // Must actually be painted (stroke or fill follows)
+      var painted = false;
+      for (var j = i + 1; j < Math.min(i + 10, opList.fnArray.length); j++) {
+        var nfn = opList.fnArray[j];
+        if (nfn === OPS.stroke || nfn === OPS.closeStroke ||
+            nfn === OPS.fill || nfn === OPS.eoFill ||
+            nfn === OPS.fillStroke || nfn === OPS.eoFillStroke) {
+          painted = true; break;
+        }
+        if (nfn === OPS.constructPath) break;
+      }
+      if (!painted) continue;
+
+      // Transform bounding box from local coords to page coords
+      var pageBbox = transformBbox(ctm, minMax);
+      var wIn = Math.abs(pageBbox[1] - pageBbox[0]) / 72;
+      var hIn = Math.abs(pageBbox[3] - pageBbox[2]) / 72;
+
+      // Must be at least 2" in both dimensions (filters out tiny spot-color decorations)
+      if (wIn >= 2 && hIn >= 2) {
+        candidates.push({
+          widthIn: wIn, heightIn: hIn, area: wIn * hIn,
+          x1: Math.min(pageBbox[0], pageBbox[1]),
+          y1: Math.min(pageBbox[2], pageBbox[3]),
+          x2: Math.max(pageBbox[0], pageBbox[1]),
+          y2: Math.max(pageBbox[2], pageBbox[3])
+        });
+      }
+    }
+  }
+
+  if (candidates.length === 0) return null;
+  candidates.sort(function(a, b) { return b.area - a.area; });
+  return candidates[0]; // largest = the main die line
+}
+
 function findTrimBox(uint8Array) {
   // Search raw PDF bytes for /TrimBox [x1 y1 x2 y2] (points, 72 per inch)
   var target = [0x2F,0x54,0x72,0x69,0x6D,0x42,0x6F,0x78]; // "/TrimBox"
@@ -1107,7 +1216,12 @@ function renderPdfPageToImage(file, pageNum) {
         canvas.width = renderVp.width;
         canvas.height = renderVp.height;
         var ctx = canvas.getContext('2d');
-        return page.render({ canvasContext: ctx, viewport: renderVp }).promise.then(function() {
+        return Promise.all([
+          page.render({ canvasContext: ctx, viewport: renderVp }).promise,
+          page.getOperatorList()
+        ]).then(function(renderResults) {
+          var opList = renderResults[1];
+          var dieLineBox = detectDieLineFromOpList(opList, spotColors, vp);
           // Detect white edges
           var imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
           var dd = imgData.data;
@@ -1124,17 +1238,23 @@ function renderPdfPageToImage(file, pageNum) {
           }
           var hasWhiteEdges = (rSum/count > 240 && gSum/count > 240 && bSum/count > 240);
 
-          // ── Crop to TrimBox if available (removes crop marks + bleed) ──
+          // ── Crop to die line box or TrimBox if available ──
           var croppedCanvas = canvas;
           var cropApplied = false;
-          if (trimBox && trimBox.x1 !== undefined) {
+          var cropBox = null;
+          if (dieLineBox && dieLineBox.x1 !== undefined) {
+            cropBox = dieLineBox;
+          } else if (trimBox && trimBox.x1 !== undefined) {
+            cropBox = trimBox;
+          }
+          if (cropBox) {
             // TrimBox coords are in PDF points from bottom-left origin
             // Canvas pixels are from top-left; scale = canvas px / page pt
             var pxPerPt = canvas.width / vp.width;
-            var cx = Math.round(trimBox.x1 * pxPerPt);
-            var cy = Math.round((vp.height - trimBox.y2) * pxPerPt); // flip Y
-            var cw = Math.round((trimBox.x2 - trimBox.x1) * pxPerPt);
-            var ch = Math.round((trimBox.y2 - trimBox.y1) * pxPerPt);
+            var cx = Math.round(cropBox.x1 * pxPerPt);
+            var cy = Math.round((vp.height - cropBox.y2) * pxPerPt); // flip Y
+            var cw = Math.round((cropBox.x2 - cropBox.x1) * pxPerPt);
+            var ch = Math.round((cropBox.y2 - cropBox.y1) * pxPerPt);
             // Clamp to canvas bounds
             cx = Math.max(0, cx); cy = Math.max(0, cy);
             cw = Math.min(cw, canvas.width - cx);
@@ -1149,7 +1269,7 @@ function renderPdfPageToImage(file, pageNum) {
           }
 
           // Fallback: visual crop mark detection when no TrimBox metadata
-          if (!cropApplied && !trimBox) {
+          if (!cropApplied && !trimBox && !dieLineBox) {
             var vis = detectCropMarksVisual(canvas);
             if (vis) {
               var vw = vis.rightPx - vis.leftPx;
@@ -1208,7 +1328,7 @@ function renderPdfPageToImage(file, pageNum) {
           var imgDataUrl = finalCanvas.toDataURL('image/jpeg', 0.82);
           var totalPages = pdf.numPages;
           pdf.destroy();
-          return { imgDataUrl: imgDataUrl, widthIn: widthIn, heightIn: heightIn, hasWhiteEdges: hasWhiteEdges, totalPages: totalPages, trimBox: trimBox, spotColors: spotColors };
+          return { imgDataUrl: imgDataUrl, widthIn: widthIn, heightIn: heightIn, hasWhiteEdges: hasWhiteEdges, totalPages: totalPages, trimBox: trimBox, spotColors: spotColors, dieLineBox: dieLineBox };
         });
       });
     });
@@ -1277,13 +1397,23 @@ function drawProofPage(doc, frontImg, opts) {
 
   var scale = parseFloat(opts.scale) || 1;
 
-  // Use trim dimensions when available, otherwise full page dims
-  var hasTrim = frontImg.trimBox && (
+  // Dimension priority: dieLineBox > trimBox > full page dims
+  var hasDieLine = frontImg.dieLineBox && frontImg.dieLineBox.widthIn > 0;
+  var hasTrim = !hasDieLine && frontImg.trimBox && (
     Math.abs(frontImg.trimBox.widthIn - frontImg.widthIn) > 0.05 ||
     Math.abs(frontImg.trimBox.heightIn - frontImg.heightIn) > 0.05
   );
-  var displayW = hasTrim ? frontImg.trimBox.widthIn : frontImg.widthIn;
-  var displayH = hasTrim ? frontImg.trimBox.heightIn : frontImg.heightIn;
+  var displayW, displayH;
+  if (hasDieLine) {
+    displayW = frontImg.dieLineBox.widthIn;
+    displayH = frontImg.dieLineBox.heightIn;
+  } else if (hasTrim) {
+    displayW = frontImg.trimBox.widthIn;
+    displayH = frontImg.trimBox.heightIn;
+  } else {
+    displayW = frontImg.widthIn;
+    displayH = frontImg.heightIn;
+  }
   var actualW = displayW / scale;
   var actualH = displayH / scale;
 
@@ -1291,7 +1421,9 @@ function drawProofPage(doc, frontImg, opts) {
     field('File Scale', '1/' + Math.round(1/scale) + '  (file: ' + frontImg.widthIn.toFixed(2) + '" \u00d7 ' + frontImg.heightIn.toFixed(2) + '")');
   }
 
-  if (hasTrim) {
+  if (hasDieLine) {
+    field('Die Size', fmtDim(actualW) + ' \u00d7 ' + fmtDim(actualH));
+  } else if (hasTrim) {
     var bleedH = ((frontImg.widthIn - frontImg.trimBox.widthIn) / 2).toFixed(3);
     var bleedV = ((frontImg.heightIn - frontImg.trimBox.heightIn) / 2).toFixed(3);
     field('Trim Size', fmtDim(actualW) + ' \u00d7 ' + fmtDim(actualH));
@@ -1507,11 +1639,14 @@ function drawProofPage(doc, frontImg, opts) {
     doc.text('Cut Line', legendX + 0.16, legendY + 0.1);
   }
 
-  // ── Trim box indicator ──
-  if (hasTrim) {
+  // ── Trim / die line indicator ──
+  if (hasDieLine) {
     doc.setFont('helvetica', 'normal'); doc.setFontSize(7);
     doc.setTextColor(GRAY);
-    var trimX = (spots.length > 0) ? legendX : M + 0.7;
+    doc.text('\u2702 Die line detected from PDF', PW/2, legendY + 0.1, { align: 'center' });
+  } else if (hasTrim) {
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(7);
+    doc.setTextColor(GRAY);
     doc.text('\u2702 Trim detected from PDF', PW/2, legendY + 0.1, { align: 'center' });
   }
 
