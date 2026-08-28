@@ -431,32 +431,9 @@ function findTrimBox(uint8Array) {
   // Search raw PDF bytes for /TrimBox [x1 y1 x2 y2] (points, 72 per inch)
   var target = [0x2F,0x54,0x72,0x69,0x6D,0x42,0x6F,0x78]; // "/TrimBox"
   var results = [];
-  var searchLen = Math.min(uint8Array.length, 3 * 1024 * 1024); // first 3MB
-  for (var i = 0; i < searchLen - 60; i++) {
-    var hit = true;
-    for (var j = 0; j < target.length; j++) {
-      if (uint8Array[i + j] !== target[j]) { hit = false; break; }
-    }
-    if (!hit) continue;
-    var chunk = '';
-    for (var k = i + target.length; k < Math.min(i + target.length + 100, uint8Array.length); k++) {
-      chunk += String.fromCharCode(uint8Array[k]);
-    }
-    var m = chunk.match(/\s*\[\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s*\]/);
-    if (m) {
-      var tw = Math.abs(parseFloat(m[3]) - parseFloat(m[1])) / 72;
-      var th = Math.abs(parseFloat(m[4]) - parseFloat(m[2])) / 72;
-      // Skip if basically same as a previous result (duplicate entries)
-      var isDupe = results.some(function(r) {
-        return Math.abs(r.widthIn - tw) < 0.01 && Math.abs(r.heightIn - th) < 0.01;
-      });
-      if (!isDupe) results.push({ widthIn: tw, heightIn: th });
-    }
-  }
-  // Also search last 1MB if file is large (cross-ref tables can be at end)
-  if (uint8Array.length > searchLen) {
-    var tailStart = uint8Array.length - 1024 * 1024;
-    for (var i = tailStart; i < uint8Array.length - 60; i++) {
+
+  function scanRange(start, end) {
+    for (var i = start; i < end - 60; i++) {
       var hit = true;
       for (var j = 0; j < target.length; j++) {
         if (uint8Array[i + j] !== target[j]) { hit = false; break; }
@@ -468,16 +445,86 @@ function findTrimBox(uint8Array) {
       }
       var m = chunk.match(/\s*\[\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s*\]/);
       if (m) {
-        var tw = Math.abs(parseFloat(m[3]) - parseFloat(m[1])) / 72;
-        var th = Math.abs(parseFloat(m[4]) - parseFloat(m[2])) / 72;
+        var x1 = parseFloat(m[1]), y1 = parseFloat(m[2]);
+        var x2 = parseFloat(m[3]), y2 = parseFloat(m[4]);
+        var tw = Math.abs(x2 - x1) / 72;
+        var th = Math.abs(y2 - y1) / 72;
         var isDupe = results.some(function(r) {
           return Math.abs(r.widthIn - tw) < 0.01 && Math.abs(r.heightIn - th) < 0.01;
         });
-        if (!isDupe) results.push({ widthIn: tw, heightIn: th });
+        if (!isDupe) results.push({ x1: x1, y1: y1, x2: x2, y2: y2, widthIn: tw, heightIn: th });
       }
     }
   }
+
+  var searchLen = Math.min(uint8Array.length, 3 * 1024 * 1024);
+  scanRange(0, searchLen);
+  if (uint8Array.length > searchLen) {
+    scanRange(uint8Array.length - 1024 * 1024, uint8Array.length);
+  }
   return results.length > 0 ? results[0] : null;
+}
+
+// Detect crop marks visually when TrimBox metadata is missing.
+// Scans the rendered canvas for thin dark L-shaped marks at corners
+// against a white/light slug area, then infers the trim rectangle.
+function detectCropMarksVisual(canvas) {
+  var ctx = canvas.getContext('2d');
+  var w = canvas.width, h = canvas.height;
+  // Crop marks live in the outer margin. Scan up to 15% in from each edge.
+  var margin = Math.round(Math.min(w, h) * 0.15);
+  if (margin < 20) return null;
+
+  // Scan a strip from each edge looking for a row/column where
+  // brightness abruptly drops (white slug → dark mark line).
+  function avgBrightness(imgData, x0, y0, x1, y1) {
+    var d = imgData.data, iw = imgData.width;
+    var sum = 0, n = 0;
+    for (var yy = y0; yy < y1; yy++) {
+      for (var xx = x0; xx < x1; xx++) {
+        var idx = (yy * iw + xx) * 4;
+        sum += (d[idx] + d[idx+1] + d[idx+2]) / 3;
+        n++;
+      }
+    }
+    return n > 0 ? sum / n : 255;
+  }
+
+  var imgData = ctx.getImageData(0, 0, w, h);
+
+  // Find the first dark line scanning inward from each edge along the center
+  // Crop marks are at corners, but we scan center strips for the artwork edge
+  function findEdge(horizontal, fromStart) {
+    var length = horizontal ? w : h;
+    var cross = horizontal ? h : w;
+    var center = Math.floor(cross / 2);
+    var stripW = Math.max(4, Math.floor(cross * 0.01));
+    for (var i = (fromStart ? 0 : length - 1);
+         fromStart ? i < margin : i > length - margin;
+         fromStart ? i++ : i--) {
+      var b;
+      if (horizontal) {
+        b = avgBrightness(imgData, i, center - stripW, i + 1, center + stripW);
+      } else {
+        b = avgBrightness(imgData, center - stripW, i, center + stripW, i + 1);
+      }
+      // White slug → artwork transition: brightness drops below 240
+      if (b < 240) return i;
+    }
+    return fromStart ? 0 : length;
+  }
+
+  var left = findEdge(true, true);
+  var right = findEdge(true, false);
+  var top = findEdge(false, true);
+  var bottom = findEdge(false, false);
+
+  // Validate: there should be meaningful margins (at least 5px each side)
+  if (left < 5 || top < 5 || (w - right) < 5 || (h - bottom) < 5) return null;
+  // And the resulting trim area shouldn't be tiny
+  if ((right - left) < w * 0.5 || (bottom - top) < h * 0.5) return null;
+
+  return { leftPx: left, topPx: top, rightPx: right, bottomPx: bottom };
 }
 
 function renderPdfPageToImage(file, pageNum) {
@@ -520,16 +567,85 @@ function renderPdfPageToImage(file, pageNum) {
           }
           var hasWhiteEdges = (rSum/count > 240 && gSum/count > 240 && bSum/count > 240);
 
-          var finalCanvas = canvas;
+          // ── Crop to TrimBox if available (removes crop marks + bleed) ──
+          var croppedCanvas = canvas;
+          var cropApplied = false;
+          if (trimBox && trimBox.x1 !== undefined) {
+            // TrimBox coords are in PDF points from bottom-left origin
+            // Canvas pixels are from top-left; scale = canvas px / page pt
+            var pxPerPt = canvas.width / vp.width;
+            var cx = Math.round(trimBox.x1 * pxPerPt);
+            var cy = Math.round((vp.height - trimBox.y2) * pxPerPt); // flip Y
+            var cw = Math.round((trimBox.x2 - trimBox.x1) * pxPerPt);
+            var ch = Math.round((trimBox.y2 - trimBox.y1) * pxPerPt);
+            // Clamp to canvas bounds
+            cx = Math.max(0, cx); cy = Math.max(0, cy);
+            cw = Math.min(cw, canvas.width - cx);
+            ch = Math.min(ch, canvas.height - cy);
+            if (cw > 50 && ch > 50) {
+              croppedCanvas = document.createElement('canvas');
+              croppedCanvas.width = cw;
+              croppedCanvas.height = ch;
+              croppedCanvas.getContext('2d').drawImage(canvas, cx, cy, cw, ch, 0, 0, cw, ch);
+              cropApplied = true;
+            }
+          }
+
+          // Fallback: visual crop mark detection when no TrimBox metadata
+          if (!cropApplied && !trimBox) {
+            var vis = detectCropMarksVisual(canvas);
+            if (vis) {
+              var vw = vis.rightPx - vis.leftPx;
+              var vh = vis.bottomPx - vis.topPx;
+              if (vw > 50 && vh > 50) {
+                croppedCanvas = document.createElement('canvas');
+                croppedCanvas.width = vw;
+                croppedCanvas.height = vh;
+                croppedCanvas.getContext('2d').drawImage(canvas, vis.leftPx, vis.topPx, vw, vh, 0, 0, vw, vh);
+                cropApplied = true;
+                // Derive trim dimensions from pixel ratios
+                var pxPerPt2 = canvas.width / vp.width;
+                trimBox = {
+                  widthIn: vw / pxPerPt2 / 72,
+                  heightIn: vh / pxPerPt2 / 72,
+                  x1: vis.leftPx / pxPerPt2,
+                  y1: (canvas.height - vis.bottomPx) / pxPerPt2,
+                  x2: vis.rightPx / pxPerPt2,
+                  y2: (canvas.height - vis.topPx) / pxPerPt2
+                };
+              }
+            }
+          }
+
+          // Re-check white edges on the (possibly cropped) canvas
+          if (cropApplied) {
+            var cImgData = croppedCanvas.getContext('2d').getImageData(0, 0, croppedCanvas.width, croppedCanvas.height);
+            var cdd = cImgData.data;
+            var cw2 = croppedCanvas.width, ch2 = croppedCanvas.height;
+            var ced = Math.min(5, Math.floor(cw2/4), Math.floor(ch2/4));
+            var rS2=0, gS2=0, bS2=0, cnt2=0;
+            for (var y2 = 0; y2 < ch2; y2++) {
+              for (var x2 = 0; x2 < cw2; x2++) {
+                if (y2 < ced || y2 >= ch2-ced || x2 < ced || x2 >= cw2-ced) {
+                  var idx2 = (y2 * cw2 + x2) * 4;
+                  rS2 += cdd[idx2]; gS2 += cdd[idx2+1]; bS2 += cdd[idx2+2]; cnt2++;
+                }
+              }
+            }
+            hasWhiteEdges = (rS2/cnt2 > 240 && gS2/cnt2 > 240 && bS2/cnt2 > 240);
+          }
+
+          var finalCanvas = croppedCanvas;
           var maxPx = 2400;
-          if (Math.max(canvas.width, canvas.height) > maxPx) {
-            var ratio = maxPx / Math.max(canvas.width, canvas.height);
-            var nw = Math.floor(canvas.width * ratio);
-            var nh = Math.floor(canvas.height * ratio);
-            finalCanvas = document.createElement('canvas');
-            finalCanvas.width = nw;
-            finalCanvas.height = nh;
-            finalCanvas.getContext('2d').drawImage(canvas, 0, 0, nw, nh);
+          if (Math.max(finalCanvas.width, finalCanvas.height) > maxPx) {
+            var ratio = maxPx / Math.max(finalCanvas.width, finalCanvas.height);
+            var nw = Math.floor(finalCanvas.width * ratio);
+            var nh = Math.floor(finalCanvas.height * ratio);
+            var resized = document.createElement('canvas');
+            resized.width = nw;
+            resized.height = nh;
+            resized.getContext('2d').drawImage(finalCanvas, 0, 0, nw, nh);
+            finalCanvas = resized;
           }
 
           var imgDataUrl = finalCanvas.toDataURL('image/jpeg', 0.82);
