@@ -1330,6 +1330,19 @@ function drawProofPage(doc, frontImg, opts) {
   doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
   doc.text('Double-Sided', rpX + 1.56, y + 0.09);
 
+  // ── Resolution note (under info panel, right side) ──
+  if (opts.resNote) {
+    y += 0.3;
+    doc.setFont('helvetica', 'bolditalic'); doc.setFontSize(7);
+    doc.setTextColor('#b91c1c');
+    // Word-wrap the note within the right panel width
+    var noteLines = doc.splitTextToSize(opts.resNote, rpW);
+    for (var ni = 0; ni < noteLines.length; ni++) {
+      doc.text(noteLines[ni], rpX, y + 0.1);
+      y += 0.12;
+    }
+  }
+
   // ══════════════════════════════════════════════════
   // ── Artwork Section ──
   // ══════════════════════════════════════════════════
@@ -1509,17 +1522,10 @@ function drawProofPage(doc, frontImg, opts) {
     doc.text(opts.pageLabel, PW - M, PH - M + 0.06, { align: 'right' });
   }
 
-  // ── Resolution note (when user chose "Continue" on low-res warning) ──
-  if (opts.resNote) {
-    doc.setFont('helvetica', 'bolditalic'); doc.setFontSize(7.5);
-    doc.setTextColor('#b91c1c');
-    doc.text(opts.resNote, M, PH - M + 0.06);
-  }
-
   // ── Footer ──
   doc.setFont('helvetica', 'normal'); doc.setFontSize(6.5);
   doc.setTextColor('#aaaaaa');
-  doc.text('This is a digital proof \u2014 colors may vary from final printed output.', PW/2, PH - M + 0.17, { align: 'center' });
+  doc.text('This is a digital proof \u2014 colors may vary from final printed output.', PW/2, PH - M + 0.06, { align: 'center' });
 }
 
 // ── Wire up buttons ──
@@ -1530,49 +1536,50 @@ document.getElementById('reset-btn').addEventListener('click', function() { rese
 // Parses raw PDF bytes for image Width/Height in XObjects
 // and computes effective DPI based on page dimensions
 function scanPdfImageResolutions(uint8Array, pageWidthIn, pageHeightIn) {
-  // Strategy: find /Subtype /Image entries and their /Width /Height values
-  // Then compute DPI = pixels / inches at the page's print size
   var images = [];
-  var text = '';
-  // Only scan first 5MB and last 1MB for performance
-  var headLen = Math.min(uint8Array.length, 5 * 1024 * 1024);
-  for (var i = 0; i < headLen; i++) {
-    text += String.fromCharCode(uint8Array[i]);
-  }
-  if (uint8Array.length > headLen) {
-    var tailStart = uint8Array.length - 1024 * 1024;
-    for (var i2 = tailStart; i2 < uint8Array.length; i2++) {
-      text += String.fromCharCode(uint8Array[i2]);
-    }
-  }
+  // Convert to string for searching (latin1 maps every byte 1:1)
+  var text = new TextDecoder('latin1').decode(uint8Array);
 
-  // Find XObject image definitions: /Subtype /Image ... /Width N ... /Height N
-  // They appear in streams that look like: << /Type /XObject /Subtype /Image /Width 1234 /Height 5678 ...>>
-  var objPattern = /<<[^>]*?\/Subtype\s*\/Image[^>]*?>>/g;
-  var match;
-  while ((match = objPattern.exec(text)) !== null) {
-    var block = match[0];
-    var wm = block.match(/\/Width\s+(\d+)/);
-    var hm = block.match(/\/Height\s+(\d+)/);
+  // Find every /Subtype/Image or /Subtype /Image occurrence
+  var subtypeImg = '/Subtype';
+  var pos = 0;
+  while (true) {
+    pos = text.indexOf(subtypeImg, pos);
+    if (pos < 0) break;
+    // Check that "/Image" follows (with optional whitespace or /)
+    var after = text.substring(pos + subtypeImg.length, pos + subtypeImg.length + 20);
+    var imgMatch = after.match(/^[\s\/]*Image(?:[\/\s>]|$)/);
+    if (!imgMatch) { pos++; continue; }
+
+    // Found an image XObject. Scan a window around it for /Width and /Height
+    var winStart = Math.max(0, pos - 400);
+    var winEnd = Math.min(text.length, pos + 400);
+    var ctx = text.substring(winStart, winEnd);
+
+    // Skip image masks
+    if (ctx.indexOf('/ImageMask') >= 0 && ctx.indexOf('/ImageMask true') >= 0) {
+      pos++; continue;
+    }
+
+    var wm = ctx.match(/\/Width[\s\/]*(\d+)/);
+    var hm = ctx.match(/\/Height[\s\/]*(\d+)/);
     if (wm && hm) {
       var pw = parseInt(wm[1], 10);
       var ph = parseInt(hm[1], 10);
-      // Skip tiny images (icons, masks, 1x1 soft masks)
-      if (pw < 16 || ph < 16) continue;
-      // Skip if it looks like a soft mask (often 1-bit or very small)
-      if (block.indexOf('/ImageMask') >= 0) continue;
-      // Compute effective DPI: image pixels / page inches
-      // This is a simplification — assumes image fills the page or the transform matrix scales it.
-      // For a more accurate result we'd parse the CTM, but for print QC this is the right ballpark.
-      var dpiW = pw / pageWidthIn;
-      var dpiH = ph / pageHeightIn;
-      var effDpi = Math.round(Math.min(dpiW, dpiH));
-      // Dedupe: skip if we already found same dimensions
-      var isDupe = images.some(function(img) { return img.pixW === pw && img.pixH === ph; });
-      if (!isDupe) {
-        images.push({ pixW: pw, pixH: ph, dpi: effDpi });
+      // Skip tiny images (icons, 1x1 soft masks)
+      if (pw >= 16 && ph >= 16) {
+        // Compute effective DPI: image pixels / page inches
+        var dpiW = pw / pageWidthIn;
+        var dpiH = ph / pageHeightIn;
+        var effDpi = Math.round(Math.min(dpiW, dpiH));
+        // Dedupe
+        var isDupe = images.some(function(img) { return img.pixW === pw && img.pixH === ph; });
+        if (!isDupe) {
+          images.push({ pixW: pw, pixH: ph, dpi: effDpi });
+        }
       }
     }
+    pos++;
   }
   return images;
 }
