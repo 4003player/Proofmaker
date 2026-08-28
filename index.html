@@ -12,6 +12,9 @@
 <!-- jsPDF for generating the proof PDF -->
 <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
 
+<!-- UTIF.js for TIFF decoding (Chrome/Edge don't support TIFF natively) -->
+<script src="https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.js"></script>
+
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 body {
@@ -143,9 +146,114 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
 .btn-new:hover { background: #dcdce0; }
 
 .footer { text-align: center; margin-top: 20px; font-size: 11px; color: #bbb; }
+
+/* Raster info modal */
+.modal-overlay {
+  display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.45);
+  z-index: 10000; justify-content: center; align-items: center;
+}
+.modal-overlay.active { display: flex; }
+.modal-box {
+  background: #fff; border-radius: 16px; padding: 28px 32px;
+  max-width: 420px; width: 90%; box-shadow: 0 8px 40px rgba(0,0,0,0.2);
+}
+.modal-box h3 { font-size: 17px; font-weight: 700; margin-bottom: 4px; color: #1d1d1f; }
+.modal-box .modal-filename {
+  font-size: 12px; color: #86868b; word-break: break-all; margin-bottom: 16px;
+}
+.modal-info-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px 16px; margin-bottom: 16px;
+}
+.modal-info-item { }
+.modal-info-item .mii-label { font-size: 10px; font-weight: 600; color: #86868b; text-transform: uppercase; letter-spacing: 0.3px; }
+.modal-info-item .mii-value { font-size: 15px; font-weight: 600; color: #1d1d1f; }
+.modal-info-item .mii-value.accent { color: #0071e3; }
+.modal-divider { height: 1px; background: #f0f0f0; margin: 12px 0; }
+.modal-field { margin-bottom: 12px; }
+.modal-field label { display: block; font-size: 11px; font-weight: 600; color: #86868b; text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 3px; }
+.modal-field input {
+  width: 100%; padding: 9px 11px; border: 1px solid #d2d2d7; border-radius: 8px;
+  font-size: 14px; font-family: inherit; background: #fafafa;
+}
+.modal-field input:focus { outline: none; border-color: #0071e3; box-shadow: 0 0 0 3px rgba(0,113,227,0.15); background: #fff; }
+.modal-field .mf-hint { font-size: 11px; color: #86868b; margin-top: 3px; }
+.modal-computed {
+  background: #f5f5f7; border-radius: 10px; padding: 12px 14px; margin-bottom: 16px;
+}
+.modal-computed .mc-row { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 4px; }
+.modal-computed .mc-row:last-child { margin-bottom: 0; }
+.modal-computed .mc-label { color: #86868b; }
+.modal-computed .mc-value { font-weight: 600; color: #1d1d1f; }
+.modal-computed .mc-value.trim { color: #34c759; font-weight: 700; }
+.modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+.modal-actions button {
+  padding: 10px 22px; border: none; border-radius: 10px;
+  font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s;
+}
+.modal-actions .modal-cancel { background: #e8e8ed; color: #1d1d1f; }
+.modal-actions .modal-cancel:hover { background: #dcdce0; }
+.modal-actions .modal-ok { background: #0071e3; color: #fff; }
+.modal-actions .modal-ok:hover { background: #0077ed; }
+.file-item .badge {
+  display: inline-block; padding: 1px 6px; border-radius: 4px;
+  font-size: 9px; font-weight: 700; text-transform: uppercase; margin-left: 6px;
+}
+.file-item .badge-img { background: #e0f2fe; color: #0369a1; }
+.file-item .badge-pdf { background: #fef3c7; color: #92400e; }
 </style>
 </head>
 <body>
+
+<!-- Raster file info modal -->
+<div class="modal-overlay" id="raster-modal">
+  <div class="modal-box">
+    <h3>📐 Raster File Info</h3>
+    <div class="modal-filename" id="rm-filename"></div>
+    <div class="modal-info-grid">
+      <div class="modal-info-item">
+        <div class="mii-label">Pixel Dimensions</div>
+        <div class="mii-value" id="rm-pixels"></div>
+      </div>
+      <div class="modal-info-item">
+        <div class="mii-label">Resolution</div>
+        <div class="mii-value accent" id="rm-dpi"></div>
+      </div>
+      <div class="modal-info-item">
+        <div class="mii-label">File Size</div>
+        <div class="mii-value" id="rm-filesize"></div>
+      </div>
+      <div class="modal-info-item">
+        <div class="mii-label">Format</div>
+        <div class="mii-value" id="rm-format"></div>
+      </div>
+    </div>
+    <div class="modal-divider"></div>
+    <div class="modal-field">
+      <label>Resolution (DPI)</label>
+      <input type="number" id="rm-dpi-input" value="300" min="1" max="9999" step="1">
+      <div class="mf-hint" id="rm-dpi-hint">Auto-detected from file metadata</div>
+    </div>
+    <div class="modal-field">
+      <label>Bleed (inches per side)</label>
+      <input type="number" id="rm-bleed-input" value="0" min="0" max="6" step="0.0625">
+      <div class="mf-hint">How much bleed is included? (e.g. 0.125 = ⅛″)</div>
+    </div>
+    <div class="modal-computed" id="rm-computed">
+      <div class="mc-row">
+        <span class="mc-label">Full size (with bleed)</span>
+        <span class="mc-value" id="rm-full-size"></span>
+      </div>
+      <div class="mc-row">
+        <span class="mc-label">Trim size</span>
+        <span class="mc-value trim" id="rm-trim-size"></span>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="modal-cancel" id="rm-cancel">Cancel</button>
+      <button class="modal-ok" id="rm-ok">✓ Add File</button>
+    </div>
+  </div>
+</div>
 
 <!-- Progress overlay -->
 <div class="progress-overlay" id="progress">
@@ -158,7 +266,7 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
 <div class="container" id="form-section">
   <header>
     <h1>📋 Proof Sheet Generator</h1>
-    <p>Drop your print-ready PDFs and fill in the job details</p>
+    <p>Drop your print-ready PDFs or images and fill in the job details</p>
   </header>
 
   <!-- File drop -->
@@ -166,10 +274,10 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
     <h2>Files</h2>
     <div class="file-drop" id="pdf-drop">
       <div class="icon">📄</div>
-      <p>Click here or drag & drop your PDFs</p>
-      <div class="sub">You can drop multiple files — each page becomes a proof sheet</div>
+      <p>Click here or drag & drop your files</p>
+      <div class="sub">PDF, TIF, JPG, PNG — each becomes a proof sheet</div>
     </div>
-    <input type="file" id="pdf-input" accept=".pdf" multiple style="display:none;">
+    <input type="file" id="pdf-input" accept=".pdf,.tif,.tiff,.jpg,.jpeg,.png" multiple style="display:none;">
     <div class="file-list" id="file-list" style="display:none;">
       <ul id="file-items"></ul>
     </div>
@@ -291,7 +399,17 @@ brandedToggle.addEventListener('change', function() {
 });
 
 // ── Collected files ──
-var pdfFiles = [];
+// Each entry: { file, type:'pdf'|'raster', rasterMeta?: { dpi, pixW, pixH, widthIn, heightIn, bleed, trimW, trimH, format, imgDataUrl } }
+var allFiles = [];
+
+// ── Accepted extensions ──
+var RASTER_EXTS = ['.tif', '.tiff', '.jpg', '.jpeg', '.png'];
+function isRasterFile(name) {
+  var lower = name.toLowerCase();
+  return RASTER_EXTS.some(function(ext) { return lower.endsWith(ext); });
+}
+function isPdfFile(name) { return name.toLowerCase().endsWith('.pdf'); }
+function isAcceptedFile(name) { return isPdfFile(name) || isRasterFile(name); }
 
 // ── DOM refs ──
 var dropZone = document.getElementById('pdf-drop');
@@ -304,7 +422,386 @@ var progressBar = document.getElementById('progress-bar');
 var progressStatus = document.getElementById('progress-status');
 var progressDetail = document.getElementById('progress-detail');
 
-// ── File handling ──
+// ── Raster modal DOM refs ──
+var rasterModal = document.getElementById('raster-modal');
+var rmFilename = document.getElementById('rm-filename');
+var rmPixels = document.getElementById('rm-pixels');
+var rmDpi = document.getElementById('rm-dpi');
+var rmFilesize = document.getElementById('rm-filesize');
+var rmFormat = document.getElementById('rm-format');
+var rmDpiInput = document.getElementById('rm-dpi-input');
+var rmDpiHint = document.getElementById('rm-dpi-hint');
+var rmBleedInput = document.getElementById('rm-bleed-input');
+var rmFullSize = document.getElementById('rm-full-size');
+var rmTrimSize = document.getElementById('rm-trim-size');
+var rmCancel = document.getElementById('rm-cancel');
+var rmOk = document.getElementById('rm-ok');
+
+// ── DPI detection from raw bytes ──
+function detectDpiFromBytes(uint8, filename) {
+  var dpi = null;
+  var lower = filename.toLowerCase();
+
+  // JPEG: look for JFIF APP0 (FFD8 FFE0) or EXIF APP1 (FFD8 FFE1)
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
+    dpi = parseJfifDpi(uint8) || parseExifDpi(uint8);
+  }
+  // PNG: look for pHYs chunk
+  else if (lower.endsWith('.png')) {
+    dpi = parsePngDpi(uint8);
+  }
+  // TIFF: IFD tags
+  else if (lower.endsWith('.tif') || lower.endsWith('.tiff')) {
+    dpi = parseTiffDpi(uint8);
+  }
+  return dpi;
+}
+
+function parseJfifDpi(d) {
+  // JFIF APP0: FF D8 FF E0 [len16] "JFIF\0" version densityUnit Xdensity Ydensity
+  if (d[0] !== 0xFF || d[1] !== 0xD8) return null;
+  for (var i = 2; i < Math.min(d.length - 20, 65536); ) {
+    if (d[i] !== 0xFF) break;
+    var marker = d[i+1];
+    var segLen = (d[i+2] << 8) | d[i+3];
+    if (marker === 0xE0) { // APP0
+      // Check JFIF signature
+      if (d[i+4]===0x4A && d[i+5]===0x46 && d[i+6]===0x49 && d[i+7]===0x46 && d[i+8]===0x00) {
+        var unit = d[i+11];
+        var xd = (d[i+12] << 8) | d[i+13];
+        var yd = (d[i+14] << 8) | d[i+15];
+        if (unit === 1 && xd > 0) return xd; // dots per inch
+        if (unit === 2 && xd > 0) return Math.round(xd * 2.54); // dots per cm → dpi
+      }
+    }
+    i += 2 + segLen;
+  }
+  return null;
+}
+
+function parseExifDpi(d) {
+  if (d[0] !== 0xFF || d[1] !== 0xD8) return null;
+  for (var i = 2; i < Math.min(d.length - 20, 65536); ) {
+    if (d[i] !== 0xFF) break;
+    var marker = d[i+1];
+    var segLen = (d[i+2] << 8) | d[i+3];
+    if (marker === 0xE1) { // APP1 EXIF
+      // Check "Exif\0\0"
+      if (d[i+4]===0x45 && d[i+5]===0x78 && d[i+6]===0x69 && d[i+7]===0x66) {
+        var tiffStart = i + 10; // after marker(2)+len(2)+Exif\0\0(6)
+        return parseTiffIfd(d, tiffStart);
+      }
+    }
+    i += 2 + segLen;
+  }
+  return null;
+}
+
+function parsePngDpi(d) {
+  // PNG chunks: after 8-byte signature, each chunk is [len32][type4][data][crc32]
+  if (d[0]!==0x89 || d[1]!==0x50) return null;
+  var i = 8;
+  while (i < d.length - 12) {
+    var len = (d[i]<<24) | (d[i+1]<<16) | (d[i+2]<<8) | d[i+3];
+    var type = String.fromCharCode(d[i+4], d[i+5], d[i+6], d[i+7]);
+    if (type === 'pHYs' && len === 9) {
+      var ppuX = (d[i+8]<<24) | (d[i+9]<<16) | (d[i+10]<<8) | d[i+11];
+      var ppuY = (d[i+12]<<24) | (d[i+13]<<16) | (d[i+14]<<8) | d[i+15];
+      var unit = d[i+16];
+      if (unit === 1 && ppuX > 0) return Math.round(ppuX / 39.3701); // meters → inches
+      // unit 0 = unknown, can't derive DPI
+      return null;
+    }
+    i += 12 + len;
+  }
+  return null;
+}
+
+function parseTiffDpi(d) {
+  return parseTiffIfd(d, 0);
+}
+
+function parseTiffIfd(d, base) {
+  if (base + 8 > d.length) return null;
+  var le = (d[base]===0x49 && d[base+1]===0x49); // II = little-endian
+  var be = (d[base]===0x4D && d[base+1]===0x4D); // MM = big-endian
+  if (!le && !be) return null;
+
+  function u16(off) {
+    off += base;
+    if (off+2 > d.length) return 0;
+    return le ? (d[off] | (d[off+1]<<8)) : ((d[off]<<8) | d[off+1]);
+  }
+  function u32(off) {
+    off += base;
+    if (off+4 > d.length) return 0;
+    return le ? (d[off] | (d[off+1]<<8) | (d[off+2]<<16) | (d[off+3]<<24))
+              : ((d[off]<<24) | (d[off+1]<<16) | (d[off+2]<<8) | d[off+3]);
+  }
+
+  var ifdOff = u32(4);
+  if (ifdOff === 0 || ifdOff + 2 > d.length - base) return null;
+  var nEntries = u16(ifdOff);
+  var resUnit = 2; // default = inches
+  var xRes = null, yRes = null;
+
+  for (var e = 0; e < nEntries; e++) {
+    var entryOff = ifdOff + 2 + e * 12;
+    if (entryOff + 12 > d.length - base) break;
+    var tag = u16(entryOff);
+    var type = u16(entryOff + 2);
+    var valOff = u32(entryOff + 8);
+    if (tag === 0x0128) { // ResolutionUnit
+      resUnit = (type === 3) ? u16(entryOff + 8) : valOff; // SHORT or LONG
+    }
+    if (tag === 0x011A) { // XResolution (RATIONAL = type 5)
+      if (type === 5 && valOff + 8 <= d.length - base) {
+        var num = u32(valOff);
+        var den = u32(valOff + 4);
+        if (den > 0) xRes = num / den;
+      }
+    }
+    if (tag === 0x011B) { // YResolution
+      if (type === 5 && valOff + 8 <= d.length - base) {
+        var num2 = u32(valOff);
+        var den2 = u32(valOff + 4);
+        if (den2 > 0) yRes = num2 / den2;
+      }
+    }
+  }
+
+  if (xRes && xRes > 0) {
+    if (resUnit === 3) xRes = Math.round(xRes * 2.54); // cm → inch
+    return Math.round(xRes);
+  }
+  return null;
+}
+
+// ── Read raster image dimensions + DPI and show modal ──
+function processRasterFile(file) {
+  return new Promise(function(resolve, reject) {
+    file.arrayBuffer().then(function(buf) {
+      var uint8 = new Uint8Array(buf);
+      var dpi = detectDpiFromBytes(uint8, file.name) || 0;
+      var lower = file.name.toLowerCase();
+      var isTiff = lower.endsWith('.tif') || lower.endsWith('.tiff');
+
+      if (isTiff && typeof UTIF !== 'undefined') {
+        // Decode TIFF with UTIF.js (browsers don't support TIFF natively)
+        try {
+          var ifds = UTIF.decode(buf);
+          UTIF.decodeImage(buf, ifds[0]);
+          var rgba = UTIF.toRGBA8(ifds[0]);
+          var pixW = ifds[0].width;
+          var pixH = ifds[0].height;
+
+          // Create canvas from RGBA data
+          var tiffCanvas = document.createElement('canvas');
+          tiffCanvas.width = pixW;
+          tiffCanvas.height = pixH;
+          var tCtx = tiffCanvas.getContext('2d');
+          var imgData = tCtx.createImageData(pixW, pixH);
+          imgData.data.set(new Uint8Array(rgba));
+          tCtx.putImageData(imgData, 0, 0);
+
+          // Create an Image element from the canvas for the modal
+          var dataUrl = tiffCanvas.toDataURL('image/png');
+          var img = new Image();
+          img.onload = function() {
+            showRasterModal(file, pixW, pixH, dpi, img).then(function(result) {
+              resolve(result);
+            }).catch(function() {
+              resolve(null);
+            });
+          };
+          img.src = dataUrl;
+        } catch(e) {
+          console.error('TIFF decode error:', e);
+          alert('Could not decode TIFF: ' + file.name + '\n' + e.message);
+          resolve(null);
+        }
+      } else {
+        // JPG/PNG: use native Image element
+        var blob = new Blob([buf], { type: file.type || 'image/png' });
+        var url = URL.createObjectURL(blob);
+        var img = new Image();
+        img.onload = function() {
+          var pixW = img.naturalWidth;
+          var pixH = img.naturalHeight;
+          URL.revokeObjectURL(url);
+
+          showRasterModal(file, pixW, pixH, dpi, img).then(function(result) {
+            resolve(result);
+          }).catch(function() {
+            resolve(null);
+          });
+        };
+        img.onerror = function() {
+          URL.revokeObjectURL(url);
+          alert('Could not read image: ' + file.name);
+          resolve(null);
+        };
+        img.src = url;
+      }
+    });
+  });
+}
+
+function showRasterModal(file, pixW, pixH, detectedDpi, imgEl) {
+  return new Promise(function(resolve, reject) {
+    var ext = file.name.split('.').pop().toUpperCase();
+    if (ext === 'JPEG') ext = 'JPG';
+    if (ext === 'TIFF') ext = 'TIF';
+
+    rmFilename.textContent = file.name;
+    rmPixels.textContent = pixW + ' × ' + pixH + ' px';
+    rmFilesize.textContent = (file.size / (1024*1024)).toFixed(1) + ' MB';
+    rmFormat.textContent = ext;
+
+    var useDpi = detectedDpi > 0 ? detectedDpi : 300;
+    rmDpiInput.value = useDpi;
+    rmDpi.textContent = detectedDpi > 0 ? detectedDpi + ' DPI' : 'Unknown';
+    rmDpiHint.textContent = detectedDpi > 0 ? 'Auto-detected from file metadata' : 'Not found in file — enter manually';
+    rmBleedInput.value = '0';
+
+    function updateComputed() {
+      var d = parseFloat(rmDpiInput.value) || 300;
+      var bleed = parseFloat(rmBleedInput.value) || 0;
+      var fullW = pixW / d;
+      var fullH = pixH / d;
+      var trimW = fullW - bleed * 2;
+      var trimH = fullH - bleed * 2;
+      if (trimW < 0) trimW = fullW;
+      if (trimH < 0) trimH = fullH;
+      rmFullSize.textContent = fullW.toFixed(2) + '" × ' + fullH.toFixed(2) + '"';
+      rmTrimSize.textContent = trimW.toFixed(2) + '" × ' + trimH.toFixed(2) + '"';
+      rmDpi.textContent = d + ' DPI';
+    }
+    updateComputed();
+    rmDpiInput.oninput = updateComputed;
+    rmBleedInput.oninput = updateComputed;
+
+    rasterModal.classList.add('active');
+
+    function cleanup() {
+      rasterModal.classList.remove('active');
+      rmOk.onclick = null;
+      rmCancel.onclick = null;
+    }
+
+    rmCancel.onclick = function() { cleanup(); reject(); };
+    rmOk.onclick = function() {
+      var d = parseFloat(rmDpiInput.value) || 300;
+      var bleed = parseFloat(rmBleedInput.value) || 0;
+      var fullW = pixW / d;
+      var fullH = pixH / d;
+      var trimW = fullW - bleed * 2;
+      var trimH = fullH - bleed * 2;
+      if (trimW < 0) trimW = fullW;
+      if (trimH < 0) trimH = fullH;
+
+      // Create the data URL (downsample if huge)
+      var canvas = document.createElement('canvas');
+      var maxPx = 2400;
+      var cw = pixW, ch = pixH;
+      if (Math.max(cw, ch) > maxPx) {
+        var ratio = maxPx / Math.max(cw, ch);
+        cw = Math.floor(cw * ratio);
+        ch = Math.floor(ch * ratio);
+      }
+      canvas.width = cw; canvas.height = ch;
+
+      // If there's bleed, crop to trim area
+      var srcX = 0, srcY = 0, srcW = pixW, srcH = pixH;
+      if (bleed > 0) {
+        var bleedPx = Math.round(bleed * d);
+        srcX = bleedPx; srcY = bleedPx;
+        srcW = pixW - bleedPx * 2;
+        srcH = pixH - bleedPx * 2;
+        if (srcW < 1 || srcH < 1) { srcX = 0; srcY = 0; srcW = pixW; srcH = pixH; }
+        // Recalculate canvas size for trimmed image
+        var tw = srcW, th = srcH;
+        if (Math.max(tw, th) > maxPx) {
+          var r2 = maxPx / Math.max(tw, th);
+          tw = Math.floor(tw * r2);
+          th = Math.floor(th * r2);
+        }
+        canvas.width = tw; canvas.height = th;
+        cw = tw; ch = th;
+      }
+
+      canvas.getContext('2d').drawImage(imgEl, srcX, srcY, srcW, srcH, 0, 0, cw, ch);
+
+      // White edge detection on final canvas
+      var iData = canvas.getContext('2d').getImageData(0, 0, cw, ch);
+      var dd = iData.data;
+      var ed = Math.min(5, Math.floor(cw/4), Math.floor(ch/4));
+      var rS=0, gS=0, bS=0, cnt=0;
+      for (var yy = 0; yy < ch; yy++) {
+        for (var xx = 0; xx < cw; xx++) {
+          if (yy < ed || yy >= ch-ed || xx < ed || xx >= cw-ed) {
+            var idx = (yy * cw + xx) * 4;
+            rS += dd[idx]; gS += dd[idx+1]; bS += dd[idx+2]; cnt++;
+          }
+        }
+      }
+      var hasWhiteEdges = (rS/cnt > 240 && gS/cnt > 240 && bS/cnt > 240);
+
+      var imgDataUrl = canvas.toDataURL('image/jpeg', 0.82);
+
+      cleanup();
+      resolve({
+        file: file,
+        type: 'raster',
+        rasterMeta: {
+          dpi: d,
+          pixW: pixW, pixH: pixH,
+          widthIn: fullW, heightIn: fullH,
+          bleed: bleed,
+          trimW: trimW, trimH: trimH,
+          format: ext,
+          imgDataUrl: imgDataUrl,
+          hasWhiteEdges: hasWhiteEdges
+        }
+      });
+    };
+  });
+}
+
+// ── File handling (accepts PDF + raster) ──
+var pendingRasterQueue = [];
+var processingRaster = false;
+
+function addAcceptedFiles(fileArray) {
+  var pdfAdded = false;
+  for (var i = 0; i < fileArray.length; i++) {
+    var f = fileArray[i];
+    if (isPdfFile(f.name)) {
+      allFiles.push({ file: f, type: 'pdf' });
+      pdfAdded = true;
+    } else if (isRasterFile(f.name)) {
+      pendingRasterQueue.push(f);
+    }
+  }
+  if (pdfAdded) renderFileList();
+  processNextRaster();
+}
+
+function processNextRaster() {
+  if (processingRaster || pendingRasterQueue.length === 0) return;
+  processingRaster = true;
+  var f = pendingRasterQueue.shift();
+  processRasterFile(f).then(function(entry) {
+    if (entry) {
+      allFiles.push(entry);
+      renderFileList();
+    }
+    processingRaster = false;
+    processNextRaster();
+  });
+}
+
+// ── File handling events ──
 dropZone.addEventListener('click', function(ev) {
   ev.stopPropagation();
   fileInput.value = '';
@@ -317,37 +814,46 @@ dropZone.addEventListener('drop', function(ev) {
   ev.preventDefault();
   ev.stopPropagation();
   dropZone.classList.remove('dragover');
+  var accepted = [];
   for (var i = 0; i < ev.dataTransfer.files.length; i++) {
     var f = ev.dataTransfer.files[i];
-    if (f.name.toLowerCase().endsWith('.pdf')) pdfFiles.push(f);
+    if (isAcceptedFile(f.name)) accepted.push(f);
   }
-  renderFileList();
+  if (accepted.length > 0) addAcceptedFiles(accepted);
 });
 
 fileInput.addEventListener('change', function() {
+  var accepted = [];
   for (var i = 0; i < fileInput.files.length; i++) {
     var f = fileInput.files[i];
-    if (f.name.toLowerCase().endsWith('.pdf')) pdfFiles.push(f);
+    if (isAcceptedFile(f.name)) accepted.push(f);
   }
-  renderFileList();
+  if (accepted.length > 0) addAcceptedFiles(accepted);
 });
 
 function renderFileList() {
-  genBtn.disabled = pdfFiles.length === 0;
-  if (pdfFiles.length === 0) { fileList.style.display = 'none'; return; }
+  genBtn.disabled = allFiles.length === 0;
+  if (allFiles.length === 0) { fileList.style.display = 'none'; return; }
   fileItems.innerHTML = '';
-  pdfFiles.forEach(function(f, i) {
+  allFiles.forEach(function(entry, i) {
     var li = document.createElement('li');
     li.className = 'file-item';
-    var sizeMB = (f.size / (1024*1024)).toFixed(1);
-    li.innerHTML = '<span class="name">' + f.name + '</span>' +
-      '<span class="info">' + sizeMB + ' MB</span>' +
+    var sizeMB = (entry.file.size / (1024*1024)).toFixed(1);
+    var badge = entry.type === 'raster'
+      ? '<span class="badge badge-img">' + entry.rasterMeta.format + '</span>'
+      : '<span class="badge badge-pdf">PDF</span>';
+    var infoText = sizeMB + ' MB';
+    if (entry.type === 'raster') {
+      infoText = entry.rasterMeta.trimW.toFixed(1) + '" × ' + entry.rasterMeta.trimH.toFixed(1) + '" · ' + entry.rasterMeta.dpi + ' DPI';
+    }
+    li.innerHTML = '<span class="name">' + entry.file.name + badge + '</span>' +
+      '<span class="info">' + infoText + '</span>' +
       '<button class="remove" onclick="window._removeFile(' + i + ')">✕</button>';
     fileItems.appendChild(li);
   });
   fileList.style.display = 'block';
 }
-window._removeFile = function(idx) { pdfFiles.splice(idx, 1); renderFileList(); };
+window._removeFile = function(idx) { allFiles.splice(idx, 1); renderFileList(); };
 
 // ── Helper functions ──
 function fmtDim(inches) {
@@ -743,6 +1249,12 @@ function drawProofPage(doc, frontImg, opts) {
     field('Finished Size', fmtDim(actualW) + ' \u00d7 ' + fmtDim(actualH));
   }
 
+  // Raster file info (resolution + pixel dims)
+  if (frontImg.rasterInfo) {
+    field('Resolution', frontImg.rasterInfo.dpi + ' DPI');
+    field('Pixels', frontImg.rasterInfo.pixW + ' \u00d7 ' + frontImg.rasterInfo.pixH + ' px');
+  }
+
   // Checkboxes
   y += 0.05;
   var pt = (opts.printType || '').toLowerCase();
@@ -960,7 +1472,7 @@ document.getElementById('reset-btn').addEventListener('click', function() { rese
 window.generateProof = function() {
   var clientName = document.getElementById('client_name').value.trim();
   if (!clientName) { alert('Please enter a client name.'); return; }
-  if (pdfFiles.length === 0) { alert('Please drop at least one PDF.'); return; }
+  if (allFiles.length === 0) { alert('Please drop at least one file.'); return; }
 
   var jobNumber = document.getElementById('job_number').value.trim();
   var qty = document.getElementById('qty').value.trim();
@@ -974,38 +1486,55 @@ window.generateProof = function() {
   // Show progress
   progressOverlay.classList.add('active');
   progressBar.style.width = '0%';
-  progressStatus.textContent = 'Reading PDFs\u2026';
+  progressStatus.textContent = 'Reading files\u2026';
   progressDetail.textContent = 'Counting pages';
 
+  // Build a unified page plan from all files (PDFs expand to pages, rasters are 1 each)
   var pagePlan = [];
   var fileIdx = 0;
 
   function readNextFile() {
-    if (fileIdx >= pdfFiles.length) {
+    if (fileIdx >= allFiles.length) {
       processPages();
       return;
     }
-    var file = pdfFiles[fileIdx];
-    file.arrayBuffer().then(function(buf) {
-      return pdfjsLib.getDocument({ data: buf }).promise;
-    }).then(function(pdf) {
-      var n = pdf.numPages;
-      for (var p = 1; p <= n; p++) {
-        pagePlan.push({ file: pdfFiles[fileIdx], pageNum: p, filename: pdfFiles[fileIdx].name, totalPages: n });
-      }
-      pdf.destroy();
+    var entry = allFiles[fileIdx];
+    if (entry.type === 'raster') {
+      // Raster files are already processed — add directly
+      var rm = entry.rasterMeta;
+      pagePlan.push({
+        type: 'raster',
+        filename: entry.file.name,
+        totalPages: 1,
+        pageNum: 1,
+        rasterMeta: rm
+      });
       fileIdx++;
       readNextFile();
-    }).catch(function(e) {
-      console.error('Error reading', pdfFiles[fileIdx].name, e);
-      fileIdx++;
-      readNextFile();
-    });
+    } else {
+      // PDF: read pages
+      var file = entry.file;
+      file.arrayBuffer().then(function(buf) {
+        return pdfjsLib.getDocument({ data: buf }).promise;
+      }).then(function(pdf) {
+        var n = pdf.numPages;
+        for (var p = 1; p <= n; p++) {
+          pagePlan.push({ type: 'pdf', file: entry.file, pageNum: p, filename: entry.file.name, totalPages: n });
+        }
+        pdf.destroy();
+        fileIdx++;
+        readNextFile();
+      }).catch(function(e) {
+        console.error('Error reading', entry.file.name, e);
+        fileIdx++;
+        readNextFile();
+      });
+    }
   }
 
   function processPages() {
     if (pagePlan.length === 0) {
-      alert('No valid PDF pages found.');
+      alert('No valid pages found.');
       progressOverlay.classList.remove('active');
       return;
     }
@@ -1035,6 +1564,25 @@ window.generateProof = function() {
     var doc = new jsPDF({ orientation: 'landscape', unit: 'in', format: 'letter' });
     var sheetIdx = 0;
 
+    // Helper: get image data for a page plan item (PDF or raster)
+    function getPageImage(item) {
+      if (item.type === 'raster') {
+        var rm = item.rasterMeta;
+        return Promise.resolve({
+          imgDataUrl: rm.imgDataUrl,
+          widthIn: rm.widthIn,
+          heightIn: rm.heightIn,
+          hasWhiteEdges: rm.hasWhiteEdges,
+          totalPages: 1,
+          trimBox: rm.bleed > 0 ? { widthIn: rm.trimW, heightIn: rm.trimH } : null,
+          spotColors: [],
+          rasterInfo: { dpi: rm.dpi, pixW: rm.pixW, pixH: rm.pixH, bleed: rm.bleed }
+        });
+      } else {
+        return renderPdfPageToImage(item.file, item.pageNum);
+      }
+    }
+
     function renderNextSheet() {
       if (sheetIdx >= sheetPlan.length) {
         finishPdf();
@@ -1049,7 +1597,7 @@ window.generateProof = function() {
       if (sheetIdx > 0) doc.addPage('letter', 'landscape');
 
       // Render front page
-      renderPdfPageToImage(sheet.front.file, sheet.front.pageNum).then(function(frontImg) {
+      getPageImage(sheet.front).then(function(frontImg) {
         function finishSheet(backImg) {
           var pageLabel = '';
           if (totalSheets > 1) {
@@ -1074,7 +1622,7 @@ window.generateProof = function() {
 
         // If double-sided and back page exists, render it too
         if (sheet.back) {
-          renderPdfPageToImage(sheet.back.file, sheet.back.pageNum).then(function(backImg) {
+          getPageImage(sheet.back).then(function(backImg) {
             finishSheet(backImg);
           }).catch(function(e) {
             console.error('Error rendering back page', e);
@@ -1118,7 +1666,7 @@ window.generateProof = function() {
 window.resetForm = function() {
   document.getElementById('result-section').classList.remove('active');
   document.getElementById('form-section').style.display = 'block';
-  pdfFiles = [];
+  allFiles = [];
   renderFileList();
 };
 
