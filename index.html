@@ -958,8 +958,8 @@ function findSpotColors(uint8Array) {
         chunk += String.fromCharCode(uint8Array[k]);
       }
       // Match /Name or (Name) after whitespace
-      var m = chunk.match(/\s+\/?([A-Za-z_][\w\s]*?)(?:\s|\/|\[|\])/) ||
-              chunk.match(/\s+\(([^)]+)\)/);
+      var m = chunk.match(/\s*\/?([A-Za-z_][\w\s]*?)(?:\s|\/|\[|\])/) ||
+              chunk.match(/\s*\(([^)]+)\)/);
       if (m) {
         var rawName = m[1].trim();
         // Normalize: lowercase, strip spaces/underscores for matching
@@ -986,7 +986,12 @@ function findSpotColors(uint8Array) {
 
 // ── Detect die line bounding box from PDF.js operator list ──
 // When spot colors indicate a die/cut line exists, walk the operator list
-// to find the largest spot-color closed path and return its bounding box.
+// to find die-line paths and return their union bounding box.
+// Strategy 1: track setStrokeColorN / setFillColorN for spot-color paths.
+// Strategy 2 (fallback): PDF.js v3 often converts Separation to alternate
+// colorspace, losing setColorN. When die spots are confirmed in raw bytes
+// but no setColorN appears in ops, collect ALL stroked closed paths — die
+// lines are stroked while visible artwork is filled.
 function detectDieLineFromOpList(opList, spotColors, viewport) {
   var dieKeys = ['cutcontour','thrucut','die','dieline','diecut','trim','cutter','cut'];
   var hasDieLine = spotColors.some(function(sc) { return dieKeys.indexOf(sc.key) >= 0; });
@@ -1006,21 +1011,46 @@ function detectDieLineFromOpList(opList, spotColors, viewport) {
     ];
   }
 
-  function transformBbox(m, mm) {
-    var corners = [
-      [m[0]*mm[0] + m[2]*mm[2] + m[4], m[1]*mm[0] + m[3]*mm[2] + m[5]],
-      [m[0]*mm[1] + m[2]*mm[2] + m[4], m[1]*mm[1] + m[3]*mm[2] + m[5]],
-      [m[0]*mm[0] + m[2]*mm[3] + m[4], m[1]*mm[0] + m[3]*mm[3] + m[5]],
-      [m[0]*mm[1] + m[2]*mm[3] + m[4], m[1]*mm[1] + m[3]*mm[3] + m[5]]
-    ];
-    var xs = corners.map(function(c){ return c[0]; });
-    var ys = corners.map(function(c){ return c[1]; });
-    return [Math.min.apply(null,xs), Math.max.apply(null,xs),
-            Math.min.apply(null,ys), Math.max.apply(null,ys)];
+  function transformPt(m, x, y) {
+    return [m[0]*x + m[2]*y + m[4], m[1]*x + m[3]*y + m[5]];
   }
 
+  // Walk the coords array for a constructPath, transform each point through
+  // the current CTM, and return the page-space bounding box.
+  function computeTransformedBounds(subOps, coords, mat) {
+    var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    var ci = 0;
+    function addPt(x, y) {
+      var p = transformPt(mat, x, y);
+      if (p[0] < minX) minX = p[0]; if (p[0] > maxX) maxX = p[0];
+      if (p[1] < minY) minY = p[1]; if (p[1] > maxY) maxY = p[1];
+    }
+    for (var si = 0; si < subOps.length; si++) {
+      var op = subOps[si];
+      if (op === OPS.moveTo || op === OPS.lineTo) {
+        addPt(coords[ci++], coords[ci++]);
+      } else if (op === OPS.curveTo) {
+        addPt(coords[ci++], coords[ci++]);
+        addPt(coords[ci++], coords[ci++]);
+        addPt(coords[ci++], coords[ci++]);
+      } else if (op === OPS.curveTo2 || op === OPS.curveTo3) {
+        addPt(coords[ci++], coords[ci++]);
+        addPt(coords[ci++], coords[ci++]);
+      } else if (op === OPS.rectangle) {
+        var rx = coords[ci++], ry = coords[ci++];
+        var rw = coords[ci++], rh = coords[ci++];
+        addPt(rx, ry); addPt(rx + rw, ry + rh);
+      }
+      // closePath consumes no coords
+    }
+    if (minX === Infinity) return null;
+    return { x1: minX, x2: maxX, y1: minY, y2: maxY };
+  }
+
+  var spotColorN = false; // true if ANY setColorN appears in the op list
+  var spotCandidates = []; // paths drawn while spot color is active
+  var strokedClosed = [];  // ALL stroked closed paths (fallback)
   var spotStrokeOn = false, spotFillOn = false;
-  var candidates = [];
 
   for (var i = 0; i < opList.fnArray.length; i++) {
     var fn = opList.fnArray[i];
@@ -1040,57 +1070,67 @@ function detectDieLineFromOpList(opList, spotColors, viewport) {
       if (ctmStack.length > 0) ctm = ctmStack.pop();
     }
 
-    // Spot color tracking: setStrokeColorN / setFillColorN = Separation/DeviceN
-    if (fn === OPS.setStrokeColorN) spotStrokeOn = true;
+    // Spot color tracking
+    if (fn === OPS.setStrokeColorN) { spotStrokeOn = true; spotColorN = true; }
     if (fn === OPS.setStrokeRGBColor || fn === OPS.setStrokeGray || fn === OPS.setStrokeCMYKColor) spotStrokeOn = false;
-    if (fn === OPS.setFillColorN) spotFillOn = true;
+    if (fn === OPS.setFillColorN) { spotFillOn = true; spotColorN = true; }
     if (fn === OPS.setFillRGBColor || fn === OPS.setFillGray || fn === OPS.setFillCMYKColor) spotFillOn = false;
 
-    // Look for constructPath while a spot color is active
-    if (fn === OPS.constructPath && (spotStrokeOn || spotFillOn)) {
-      var subOps = args[0];
-      var minMax = args[2]; // [xMin, xMax, yMin, yMax]
+    if (fn !== OPS.constructPath) continue;
 
-      // Must be a closed path (die lines are closed shapes, crop marks are open segments)
-      var isClosed = subOps.some(function(s) {
-        return s === OPS.closePath || s === OPS.rectangle;
-      });
-      if (!isClosed) continue;
+    var subOps = args[0];
+    var coords = args[1];
 
-      // Must actually be painted (stroke or fill follows)
-      var painted = false;
-      for (var j = i + 1; j < Math.min(i + 10, opList.fnArray.length); j++) {
-        var nfn = opList.fnArray[j];
-        if (nfn === OPS.stroke || nfn === OPS.closeStroke ||
-            nfn === OPS.fill || nfn === OPS.eoFill ||
-            nfn === OPS.fillStroke || nfn === OPS.eoFillStroke) {
-          painted = true; break;
-        }
-        if (nfn === OPS.constructPath) break;
-      }
-      if (!painted) continue;
+    // Must be closed (die lines are closed shapes, crop marks are open segments)
+    var isClosed = subOps.some(function(s) {
+      return s === OPS.closePath || s === OPS.rectangle;
+    });
+    if (!isClosed) continue;
 
-      // Transform bounding box from local coords to page coords
-      var pageBbox = transformBbox(ctm, minMax);
-      var wIn = Math.abs(pageBbox[1] - pageBbox[0]) / 72;
-      var hIn = Math.abs(pageBbox[3] - pageBbox[2]) / 72;
-
-      // Must be at least 2" in both dimensions (filters out tiny spot-color decorations)
-      if (wIn >= 2 && hIn >= 2) {
-        candidates.push({
-          widthIn: wIn, heightIn: hIn, area: wIn * hIn,
-          x1: Math.min(pageBbox[0], pageBbox[1]),
-          y1: Math.min(pageBbox[2], pageBbox[3]),
-          x2: Math.max(pageBbox[0], pageBbox[1]),
-          y2: Math.max(pageBbox[2], pageBbox[3])
-        });
-      }
+    // Must be stroked (die lines are stroked, artwork is filled)
+    var isStroked = false;
+    for (var j = i + 1; j < Math.min(i + 10, opList.fnArray.length); j++) {
+      var nfn = opList.fnArray[j];
+      if (nfn === OPS.stroke || nfn === OPS.closeStroke) { isStroked = true; break; }
+      if (nfn === OPS.constructPath) break;
     }
+    if (!isStroked) continue;
+
+    // Compute page-space bounding box through the CTM
+    var bbox = computeTransformedBounds(subOps, coords, ctm);
+    if (!bbox) continue;
+    var wIn = (bbox.x2 - bbox.x1) / 72;
+    var hIn = (bbox.y2 - bbox.y1) / 72;
+    // Skip tiny paths (< 0.5" either dimension — labels, hairlines)
+    if (wIn < 0.5 || hIn < 0.5) continue;
+
+    // Collect for both strategies
+    if (spotStrokeOn || spotFillOn) spotCandidates.push(bbox);
+    strokedClosed.push(bbox);
   }
 
-  if (candidates.length === 0) return null;
-  candidates.sort(function(a, b) { return b.area - a.area; });
-  return candidates[0]; // largest = the main die line
+  // Pick candidates: prefer spot-color-tracked paths; fall back to all stroked closed
+  var picks = spotColorN && spotCandidates.length > 0 ? spotCandidates : strokedClosed;
+  if (picks.length === 0) return null;
+
+  // Compute union bounding box of all die-line paths
+  var ux1 = Infinity, uy1 = Infinity, ux2 = -Infinity, uy2 = -Infinity;
+  picks.forEach(function(b) {
+    if (b.x1 < ux1) ux1 = b.x1; if (b.x2 > ux2) ux2 = b.x2;
+    if (b.y1 < uy1) uy1 = b.y1; if (b.y2 > uy2) uy2 = b.y2;
+  });
+
+  var unionW = (ux2 - ux1) / 72;
+  var unionH = (uy2 - uy1) / 72;
+
+  // Union must be at least 2" in both dimensions
+  if (unionW < 2 || unionH < 2) return null;
+
+  return {
+    widthIn: unionW, heightIn: unionH,
+    x1: ux1, y1: uy1, x2: ux2, y2: uy2,
+    pathCount: picks.length
+  };
 }
 
 function findTrimBox(uint8Array) {
