@@ -200,9 +200,60 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
 }
 .file-item .badge-img { background: #e0f2fe; color: #0369a1; }
 .file-item .badge-pdf { background: #fef3c7; color: #92400e; }
+
+/* Resolution warning modal */
+.res-modal-overlay {
+  display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+  z-index: 10001; justify-content: center; align-items: center;
+}
+.res-modal-overlay.active { display: flex; }
+.res-modal-box {
+  background: #fff; border-radius: 16px; padding: 28px 32px;
+  max-width: 500px; width: 92%; box-shadow: 0 8px 40px rgba(0,0,0,0.25);
+}
+.res-modal-box h3 { font-size: 17px; font-weight: 700; margin-bottom: 6px; color: #1d1d1f; }
+.res-modal-box .res-subtitle { font-size: 13px; color: #86868b; margin-bottom: 16px; }
+.res-list {
+  max-height: 220px; overflow-y: auto; margin-bottom: 16px;
+  border: 1px solid #f0f0f0; border-radius: 10px;
+}
+.res-list-item {
+  padding: 8px 12px; font-size: 13px; border-bottom: 1px solid #f5f5f5;
+  display: flex; justify-content: space-between; align-items: center;
+}
+.res-list-item:last-child { border-bottom: none; }
+.res-list-item .res-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #1d1d1f; font-weight: 500; }
+.res-list-item .res-dpi { font-weight: 700; margin-left: 12px; white-space: nowrap; }
+.res-list-item .res-dpi.warn { color: #dc2626; }
+.res-list-item .res-pixels { font-size: 11px; color: #86868b; margin-left: 8px; white-space: nowrap; }
+.res-actions { display: flex; gap: 10px; justify-content: flex-end; }
+.res-actions button {
+  padding: 10px 22px; border: none; border-radius: 10px;
+  font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s;
+}
+.res-btn-stop { background: #fee2e2; color: #dc2626; }
+.res-btn-stop:hover { background: #fecaca; }
+.res-btn-bypass { background: #e8e8ed; color: #1d1d1f; }
+.res-btn-bypass:hover { background: #dcdce0; }
+.res-btn-continue { background: #0071e3; color: #fff; }
+.res-btn-continue:hover { background: #0077ed; }
 </style>
 </head>
 <body>
+
+<!-- Resolution warning modal -->
+<div class="res-modal-overlay" id="res-modal">
+  <div class="res-modal-box">
+    <h3>⚠️ Low Resolution Warning</h3>
+    <div class="res-subtitle">One or more images are below 150 DPI at print size:</div>
+    <div class="res-list" id="res-list"></div>
+    <div class="res-actions">
+      <button class="res-btn-stop" id="res-stop">✕ Stop</button>
+      <button class="res-btn-bypass" id="res-bypass">Bypass</button>
+      <button class="res-btn-continue" id="res-continue">Continue ▸</button>
+    </div>
+  </div>
+</div>
 
 <!-- Raster file info modal -->
 <div class="modal-overlay" id="raster-modal">
@@ -1458,15 +1509,158 @@ function drawProofPage(doc, frontImg, opts) {
     doc.text(opts.pageLabel, PW - M, PH - M + 0.06, { align: 'right' });
   }
 
+  // ── Resolution note (when user chose "Continue" on low-res warning) ──
+  if (opts.resNote) {
+    doc.setFont('helvetica', 'bolditalic'); doc.setFontSize(7.5);
+    doc.setTextColor('#b91c1c');
+    doc.text(opts.resNote, M, PH - M + 0.06);
+  }
+
   // ── Footer ──
   doc.setFont('helvetica', 'normal'); doc.setFontSize(6.5);
   doc.setTextColor('#aaaaaa');
-  doc.text('This is a digital proof \u2014 colors may vary from final printed output.', PW/2, PH - M + 0.06, { align: 'center' });
+  doc.text('This is a digital proof \u2014 colors may vary from final printed output.', PW/2, PH - M + 0.17, { align: 'center' });
 }
 
 // ── Wire up buttons ──
 genBtn.addEventListener('click', function() { generateProof(); });
 document.getElementById('reset-btn').addEventListener('click', function() { resetForm(); });
+
+// ── Scan PDF for embedded image XObject resolutions ──
+// Parses raw PDF bytes for image Width/Height in XObjects
+// and computes effective DPI based on page dimensions
+function scanPdfImageResolutions(uint8Array, pageWidthIn, pageHeightIn) {
+  // Strategy: find /Subtype /Image entries and their /Width /Height values
+  // Then compute DPI = pixels / inches at the page's print size
+  var images = [];
+  var text = '';
+  // Only scan first 5MB and last 1MB for performance
+  var headLen = Math.min(uint8Array.length, 5 * 1024 * 1024);
+  for (var i = 0; i < headLen; i++) {
+    text += String.fromCharCode(uint8Array[i]);
+  }
+  if (uint8Array.length > headLen) {
+    var tailStart = uint8Array.length - 1024 * 1024;
+    for (var i2 = tailStart; i2 < uint8Array.length; i2++) {
+      text += String.fromCharCode(uint8Array[i2]);
+    }
+  }
+
+  // Find XObject image definitions: /Subtype /Image ... /Width N ... /Height N
+  // They appear in streams that look like: << /Type /XObject /Subtype /Image /Width 1234 /Height 5678 ...>>
+  var objPattern = /<<[^>]*?\/Subtype\s*\/Image[^>]*?>>/g;
+  var match;
+  while ((match = objPattern.exec(text)) !== null) {
+    var block = match[0];
+    var wm = block.match(/\/Width\s+(\d+)/);
+    var hm = block.match(/\/Height\s+(\d+)/);
+    if (wm && hm) {
+      var pw = parseInt(wm[1], 10);
+      var ph = parseInt(hm[1], 10);
+      // Skip tiny images (icons, masks, 1x1 soft masks)
+      if (pw < 16 || ph < 16) continue;
+      // Skip if it looks like a soft mask (often 1-bit or very small)
+      if (block.indexOf('/ImageMask') >= 0) continue;
+      // Compute effective DPI: image pixels / page inches
+      // This is a simplification — assumes image fills the page or the transform matrix scales it.
+      // For a more accurate result we'd parse the CTM, but for print QC this is the right ballpark.
+      var dpiW = pw / pageWidthIn;
+      var dpiH = ph / pageHeightIn;
+      var effDpi = Math.round(Math.min(dpiW, dpiH));
+      // Dedupe: skip if we already found same dimensions
+      var isDupe = images.some(function(img) { return img.pixW === pw && img.pixH === ph; });
+      if (!isDupe) {
+        images.push({ pixW: pw, pixH: ph, dpi: effDpi });
+      }
+    }
+  }
+  return images;
+}
+
+// ── Resolution warning modal ──
+function showResolutionWarning(lowResItems) {
+  return new Promise(function(resolve) {
+    var modal = document.getElementById('res-modal');
+    var list = document.getElementById('res-list');
+
+    // Build list
+    list.innerHTML = '';
+    lowResItems.forEach(function(item) {
+      var div = document.createElement('div');
+      div.className = 'res-list-item';
+      div.innerHTML =
+        '<span class="res-name">' + item.filename + '</span>' +
+        '<span class="res-pixels">' + item.pixW + '\u00d7' + item.pixH + 'px</span>' +
+        '<span class="res-dpi warn">' + item.dpi + ' DPI</span>';
+      list.appendChild(div);
+    });
+
+    modal.classList.add('active');
+
+    function cleanup() {
+      modal.classList.remove('active');
+      document.getElementById('res-stop').onclick = null;
+      document.getElementById('res-bypass').onclick = null;
+      document.getElementById('res-continue').onclick = null;
+    }
+
+    document.getElementById('res-stop').onclick = function() { cleanup(); resolve('stop'); };
+    document.getElementById('res-bypass').onclick = function() { cleanup(); resolve('bypass'); };
+    document.getElementById('res-continue').onclick = function() { cleanup(); resolve('continue'); };
+  });
+}
+
+// ── Collect all image resolutions across all files ──
+function collectAllResolutions(pagePlan, scale) {
+  var results = []; // { filename, pixW, pixH, dpi }
+  var promises = [];
+
+  pagePlan.forEach(function(item) {
+    if (item.type === 'raster') {
+      var rm = item.rasterMeta;
+      // For raster files, the DPI is what the user set in the modal
+      // But we need to compute effective DPI at the SCALED print size
+      var effDpi = Math.round(rm.dpi * (parseFloat(scale) || 1));
+      results.push({ filename: item.filename, pixW: rm.pixW, pixH: rm.pixH, dpi: rm.dpi });
+    } else {
+      // PDF: scan for embedded images
+      promises.push(
+        item.file.arrayBuffer().then(function(buf) {
+          var uint8 = new Uint8Array(buf);
+          return pdfjsLib.getDocument({ data: buf }).promise.then(function(pdf) {
+            return pdf.getPage(item.pageNum).then(function(page) {
+              var vp = page.getViewport({ scale: 1.0 });
+              var pageW = vp.width / 72;
+              var pageH = vp.height / 72;
+              // Check TrimBox for actual print size
+              var trimBox = findTrimBox(uint8);
+              if (trimBox) {
+                pageW = trimBox.widthIn;
+                pageH = trimBox.heightIn;
+              }
+              // Scale factor: actual printed size = page size / scale
+              var sc = parseFloat(scale) || 1;
+              var printW = pageW / sc;
+              var printH = pageH / sc;
+              var images = scanPdfImageResolutions(uint8, printW, printH);
+              images.forEach(function(img) {
+                results.push({
+                  filename: item.filename + (item.totalPages > 1 ? ' (pg ' + item.pageNum + ')' : ''),
+                  pixW: img.pixW, pixH: img.pixH, dpi: img.dpi
+                });
+              });
+              pdf.destroy();
+            });
+          });
+        })
+      );
+    }
+  });
+
+  return Promise.all(promises).then(function() {
+    return results;
+  });
+}
 
 // ── Main generate function ──
 window.generateProof = function() {
@@ -1538,6 +1732,49 @@ window.generateProof = function() {
       progressOverlay.classList.remove('active');
       return;
     }
+
+    // ── Resolution check before generating ──
+    progressDetail.textContent = 'Scanning image resolutions\u2026';
+    collectAllResolutions(pagePlan, scale).then(function(allRes) {
+      // Find items below 150 DPI (the LPI threshold)
+      var lowRes = allRes.filter(function(r) { return r.dpi < 150; });
+      if (lowRes.length > 0) {
+        // Hide progress while showing the modal
+        progressOverlay.classList.remove('active');
+        showResolutionWarning(lowRes).then(function(choice) {
+          if (choice === 'stop') {
+            // Cancel — back to main screen
+            return;
+          }
+          // Resume progress
+          progressOverlay.classList.add('active');
+          // 'continue' = add resolution note to proof, 'bypass' = ignore
+          var resNote = (choice === 'continue') ? buildResNote(allRes) : null;
+          buildSheets(resNote);
+        });
+      } else {
+        // All resolutions OK — proceed without warning
+        buildSheets(null);
+      }
+    }).catch(function(e) {
+      console.error('Resolution scan error:', e);
+      // Don't block generation if scan fails
+      buildSheets(null);
+    });
+
+    function buildResNote(allRes) {
+      // Compute the DPI range across all images
+      if (allRes.length === 0) return null;
+      var dpis = allRes.map(function(r) { return r.dpi; });
+      var minDpi = Math.min.apply(null, dpis);
+      var maxDpi = Math.max.apply(null, dpis);
+      if (minDpi === maxDpi) {
+        return '*Note: image resolutions are ' + minDpi + ' DPI';
+      }
+      return '*Note: image resolutions are ' + minDpi + ' \u2013 ' + maxDpi + ' DPI';
+    }
+
+    function buildSheets(resNote) {
 
     // Detect double-sided from print type
     var pt = printType.toLowerCase();
@@ -1613,7 +1850,8 @@ window.generateProof = function() {
             substrate: substrate, printType: printType, scale: scale, finishing: finishing,
             filename: sheet.front.filename, pageLabel: pageLabel, branded: branded,
             backImg: backImg,
-            backFilename: sheet.back ? sheet.back.filename : ''
+            backFilename: sheet.back ? sheet.back.filename : '',
+            resNote: resNote
           });
 
           sheetIdx++;
@@ -1658,7 +1896,8 @@ window.generateProof = function() {
     }
 
     renderNextSheet();
-  }
+    } // end buildSheets
+  } // end processPages
 
   readNextFile();
 };
