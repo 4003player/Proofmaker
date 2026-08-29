@@ -489,6 +489,11 @@ var rmCancel = document.getElementById('rm-cancel');
 var rmOk = document.getElementById('rm-ok');
 
 // ── DPI detection from raw bytes ──
+// NOTE: these parsers work on a HEADER SLICE (first few MB), not the full file.
+// For JPEG/PNG the first 256 KB is plenty. For TIFF, the first 4 MB covers
+// most IFD layouts; if the IFD offset points past the slice the parser still
+// handles it gracefully (returns null and the caller falls back).
+
 function detectDpiFromBytes(uint8, filename) {
   var dpi = null;
   var lower = filename.toLowerCase();
@@ -503,24 +508,49 @@ function detectDpiFromBytes(uint8, filename) {
   }
   // TIFF: IFD tags
   else if (lower.endsWith('.tif') || lower.endsWith('.tiff')) {
-    dpi = parseTiffDpi(uint8);
+    var info = parseTiffIfdFull(uint8, 0);
+    if (info) dpi = info.dpi;
   }
   return dpi;
 }
 
+// Scan past JPEG fill bytes (0xFF padding) and marker-alignment junk.
+// Returns the index of the next valid 0xFF marker byte, or -1.
+function jpegNextMarker(d, start, limit) {
+  var i = start;
+  // Skip fill bytes (consecutive 0xFF)
+  while (i < limit && d[i] === 0xFF) i++;
+  // Back up one — we want to land ON the 0xFF that precedes the marker byte
+  if (i > start) i--;
+  // If we're not on 0xFF, scan forward to find one
+  while (i < limit && d[i] !== 0xFF) i++;
+  if (i >= limit) return -1;
+  // Skip any additional fill 0xFF bytes
+  while (i < limit - 1 && d[i] === 0xFF && d[i + 1] === 0xFF) i++;
+  return (i < limit - 1 && d[i] === 0xFF) ? i : -1;
+}
+
 function parseJfifDpi(d) {
   // JFIF APP0: FF D8 FF E0 [len16] "JFIF\0" version densityUnit Xdensity Ydensity
-  if (d[0] !== 0xFF || d[1] !== 0xD8) return null;
-  for (var i = 2; i < Math.min(d.length - 20, 65536); ) {
-    if (d[i] !== 0xFF) break;
-    var marker = d[i+1];
-    var segLen = (d[i+2] << 8) | d[i+3];
-    if (marker === 0xE0) { // APP0
-      // Check JFIF signature
-      if (d[i+4]===0x4A && d[i+5]===0x46 && d[i+6]===0x49 && d[i+7]===0x46 && d[i+8]===0x00) {
-        var unit = d[i+11];
-        var xd = (d[i+12] << 8) | d[i+13];
-        var yd = (d[i+14] << 8) | d[i+15];
+  if (d.length < 20 || d[0] !== 0xFF || d[1] !== 0xD8) return null;
+  var limit = Math.min(d.length, 65536);
+  var i = 2;
+  while (i >= 0 && i < limit - 18) {
+    i = jpegNextMarker(d, i, limit);
+    if (i < 0) break;
+    var marker = d[i + 1];
+    // Stop at SOS (start of scan) — no more metadata after this
+    if (marker === 0xDA) break;
+    // Skip markers that have no length field (RST0-7, SOI, EOI, TEM)
+    if (marker === 0x00 || marker === 0x01 || (marker >= 0xD0 && marker <= 0xD9)) { i += 2; continue; }
+    if (i + 4 > limit) break;
+    var segLen = (d[i + 2] << 8) | d[i + 3];
+    if (segLen < 2) { i += 2; continue; } // invalid length — skip marker and retry
+    if (marker === 0xE0 && segLen >= 14) { // APP0 with enough room for JFIF
+      if (i + 13 < limit &&
+          d[i+4]===0x4A && d[i+5]===0x46 && d[i+6]===0x49 && d[i+7]===0x46 && d[i+8]===0x00) {
+        var unit = d[i + 11];
+        var xd = (d[i + 12] << 8) | d[i + 13];
         if (unit === 1 && xd > 0) return xd; // dots per inch
         if (unit === 2 && xd > 0) return Math.round(xd * 2.54); // dots per cm → dpi
       }
@@ -531,16 +561,25 @@ function parseJfifDpi(d) {
 }
 
 function parseExifDpi(d) {
-  if (d[0] !== 0xFF || d[1] !== 0xD8) return null;
-  for (var i = 2; i < Math.min(d.length - 20, 65536); ) {
-    if (d[i] !== 0xFF) break;
-    var marker = d[i+1];
-    var segLen = (d[i+2] << 8) | d[i+3];
+  if (d.length < 20 || d[0] !== 0xFF || d[1] !== 0xD8) return null;
+  var limit = Math.min(d.length, 65536);
+  var i = 2;
+  while (i >= 0 && i < limit - 18) {
+    i = jpegNextMarker(d, i, limit);
+    if (i < 0) break;
+    var marker = d[i + 1];
+    if (marker === 0xDA) break;
+    if (marker === 0x00 || marker === 0x01 || (marker >= 0xD0 && marker <= 0xD9)) { i += 2; continue; }
+    if (i + 4 > limit) break;
+    var segLen = (d[i + 2] << 8) | d[i + 3];
+    if (segLen < 2) { i += 2; continue; }
     if (marker === 0xE1) { // APP1 EXIF
-      // Check "Exif\0\0"
-      if (d[i+4]===0x45 && d[i+5]===0x78 && d[i+6]===0x69 && d[i+7]===0x66) {
+      if (i + 10 < limit &&
+          d[i+4]===0x45 && d[i+5]===0x78 && d[i+6]===0x69 && d[i+7]===0x66 &&
+          d[i+8]===0x00 && d[i+9]===0x00) {
         var tiffStart = i + 10; // after marker(2)+len(2)+Exif\0\0(6)
-        return parseTiffIfd(d, tiffStart);
+        var info = parseTiffIfdFull(d, tiffStart);
+        if (info && info.dpi) return info.dpi;
       }
     }
     i += 2 + segLen;
@@ -550,29 +589,27 @@ function parseExifDpi(d) {
 
 function parsePngDpi(d) {
   // PNG chunks: after 8-byte signature, each chunk is [len32][type4][data][crc32]
-  if (d[0]!==0x89 || d[1]!==0x50) return null;
+  if (d.length < 20 || d[0]!==0x89 || d[1]!==0x50) return null;
   var i = 8;
   while (i < d.length - 12) {
     var len = (d[i]<<24) | (d[i+1]<<16) | (d[i+2]<<8) | d[i+3];
+    if (len < 0 || len > d.length) break; // sanity
     var type = String.fromCharCode(d[i+4], d[i+5], d[i+6], d[i+7]);
+    if (type === 'IDAT' || type === 'IEND') break; // past metadata
     if (type === 'pHYs' && len === 9) {
       var ppuX = (d[i+8]<<24) | (d[i+9]<<16) | (d[i+10]<<8) | d[i+11];
-      var ppuY = (d[i+12]<<24) | (d[i+13]<<16) | (d[i+14]<<8) | d[i+15];
       var unit = d[i+16];
       if (unit === 1 && ppuX > 0) return Math.round(ppuX / 39.3701); // meters → inches
-      // unit 0 = unknown, can't derive DPI
-      return null;
+      return null; // unit 0 = unknown
     }
     i += 12 + len;
   }
   return null;
 }
 
-function parseTiffDpi(d) {
-  return parseTiffIfd(d, 0);
-}
-
-function parseTiffIfd(d, base) {
+// Combined TIFF IFD parser — returns { dpi, width, height } or null.
+// Works for both standalone TIFF files (base=0) and JPEG EXIF (base=APP1 offset).
+function parseTiffIfdFull(d, base) {
   if (base + 8 > d.length) return null;
   var le = (d[base]===0x49 && d[base+1]===0x49); // II = little-endian
   var be = (d[base]===0x4D && d[base+1]===0x4D); // MM = big-endian
@@ -586,95 +623,178 @@ function parseTiffIfd(d, base) {
   function u32(off) {
     off += base;
     if (off+4 > d.length) return 0;
-    return le ? (d[off] | (d[off+1]<<8) | (d[off+2]<<16) | (d[off+3]<<24))
-              : ((d[off]<<24) | (d[off+1]<<16) | (d[off+2]<<8) | d[off+3]);
+    return le ? ((d[off] | (d[off+1]<<8) | (d[off+2]<<16) | (d[off+3]<<24)) >>> 0)
+              : (((d[off]<<24) | (d[off+1]<<16) | (d[off+2]<<8) | d[off+3]) >>> 0);
   }
 
+  var magic = u16(2);
+  if (magic !== 42) return null; // not classic TIFF
+
   var ifdOff = u32(4);
-  if (ifdOff === 0 || ifdOff + 2 > d.length - base) return null;
+  if (ifdOff === 0 || base + ifdOff + 2 > d.length) return null;
   var nEntries = u16(ifdOff);
+  if (nEntries === 0 || nEntries > 500) return null; // sanity
   var resUnit = 2; // default = inches
-  var xRes = null, yRes = null;
+  var xRes = null;
+  var imgWidth = null, imgHeight = null;
 
   for (var e = 0; e < nEntries; e++) {
     var entryOff = ifdOff + 2 + e * 12;
-    if (entryOff + 12 > d.length - base) break;
+    if (base + entryOff + 12 > d.length) break;
     var tag = u16(entryOff);
     var type = u16(entryOff + 2);
+    var count = u32(entryOff + 4);
     var valOff = u32(entryOff + 8);
-    if (tag === 0x0128) { // ResolutionUnit
-      resUnit = (type === 3) ? u16(entryOff + 8) : valOff; // SHORT or LONG
+
+    // ImageWidth (tag 0x0100)
+    if (tag === 0x0100) {
+      imgWidth = (type === 3) ? u16(entryOff + 8) : valOff;
     }
-    if (tag === 0x011A) { // XResolution (RATIONAL = type 5)
-      if (type === 5 && valOff + 8 <= d.length - base) {
+    // ImageLength / height (tag 0x0101)
+    if (tag === 0x0101) {
+      imgHeight = (type === 3) ? u16(entryOff + 8) : valOff;
+    }
+    // ResolutionUnit (tag 0x0128)
+    if (tag === 0x0128) {
+      resUnit = (type === 3) ? u16(entryOff + 8) : valOff;
+    }
+    // XResolution (tag 0x011A) — RATIONAL type 5 stored at valOff
+    if (tag === 0x011A && type === 5) {
+      if (base + valOff + 8 <= d.length) {
         var num = u32(valOff);
         var den = u32(valOff + 4);
         if (den > 0) xRes = num / den;
       }
     }
-    if (tag === 0x011B) { // YResolution
-      if (type === 5 && valOff + 8 <= d.length - base) {
-        var num2 = u32(valOff);
-        var den2 = u32(valOff + 4);
-        if (den2 > 0) yRes = num2 / den2;
-      }
-    }
   }
 
+  var dpi = null;
   if (xRes && xRes > 0) {
-    if (resUnit === 3) xRes = Math.round(xRes * 2.54); // cm → inch
-    return Math.round(xRes);
+    dpi = (resUnit === 3) ? Math.round(xRes * 2.54) : Math.round(xRes);
   }
-  return null;
+  return { dpi: dpi, width: imgWidth, height: imgHeight };
 }
 
 // ── Read raster image dimensions + DPI and show modal ──
 function processRasterFile(file) {
   return new Promise(function(resolve, reject) {
-    file.arrayBuffer().then(function(buf) {
-      var uint8 = new Uint8Array(buf);
+    var lower = file.name.toLowerCase();
+    var isTiff = lower.endsWith('.tif') || lower.endsWith('.tiff');
+
+    // Read only a header slice for DPI detection — never the full multi-GB file.
+    // JPEG/PNG metadata is in the first 256 KB; TIFF IFD + resolution data
+    // is almost always within the first 4 MB (IFD offset at bytes 4-7 points
+    // to the directory, and RATIONAL resolution values sit near it).
+    var headerSize = isTiff
+      ? Math.min(file.size, 4 * 1024 * 1024)   // 4 MB for TIFF
+      : Math.min(file.size, 256 * 1024);         // 256 KB for JPEG/PNG
+
+    file.slice(0, headerSize).arrayBuffer().then(function(headerBuf) {
+      var uint8 = new Uint8Array(headerBuf);
       var dpi = detectDpiFromBytes(uint8, file.name) || 0;
-      var lower = file.name.toLowerCase();
-      var isTiff = lower.endsWith('.tif') || lower.endsWith('.tiff');
 
       if (isTiff && typeof UTIF !== 'undefined') {
-        // Decode TIFF with UTIF.js (browsers don't support TIFF natively)
-        try {
-          var ifds = UTIF.decode(buf);
-          UTIF.decodeImage(buf, ifds[0]);
-          var rgba = UTIF.toRGBA8(ifds[0]);
-          var pixW = ifds[0].width;
-          var pixH = ifds[0].height;
+        // Try to get pixel dimensions from IFD tags (fast — no decode needed).
+        // This works even when the full file is too large for UTIF to decode.
+        var ifdInfo = parseTiffIfdFull(uint8, 0);
+        var ifdW = (ifdInfo && ifdInfo.width) ? ifdInfo.width : null;
+        var ifdH = (ifdInfo && ifdInfo.height) ? ifdInfo.height : null;
 
-          // Create canvas from RGBA data
-          var tiffCanvas = document.createElement('canvas');
-          tiffCanvas.width = pixW;
-          tiffCanvas.height = pixH;
-          var tCtx = tiffCanvas.getContext('2d');
-          var imgData = tCtx.createImageData(pixW, pixH);
-          imgData.data.set(new Uint8Array(rgba));
-          tCtx.putImageData(imgData, 0, 0);
+        // Read full file for UTIF pixel decoding (needed for preview image).
+        // For very large files (>500 MB) skip full decode and use IFD dims.
+        var tooLargeForDecode = file.size > 500 * 1024 * 1024;
 
-          // Create an Image element from the canvas for the modal
-          var dataUrl = tiffCanvas.toDataURL('image/png');
-          var img = new Image();
-          img.onload = function() {
-            showRasterModal(file, pixW, pixH, dpi, img).then(function(result) {
+        if (tooLargeForDecode && ifdW && ifdH) {
+          // Large TIFF: skip UTIF decode, use IFD dimensions + placeholder preview
+          var placeholderCanvas = document.createElement('canvas');
+          placeholderCanvas.width = 400; placeholderCanvas.height = 300;
+          var pCtx = placeholderCanvas.getContext('2d');
+          pCtx.fillStyle = '#f0f0f0'; pCtx.fillRect(0, 0, 400, 300);
+          pCtx.fillStyle = '#999'; pCtx.font = '16px sans-serif'; pCtx.textAlign = 'center';
+          pCtx.fillText('TIFF too large for browser preview', 200, 140);
+          pCtx.fillText(ifdW + ' × ' + ifdH + ' px', 200, 168);
+          var placeholderImg = new Image();
+          placeholderImg.onload = function() {
+            showRasterModal(file, ifdW, ifdH, dpi, placeholderImg).then(function(result) {
               resolve(result);
-            }).catch(function() {
-              resolve(null);
-            });
+            }).catch(function() { resolve(null); });
           };
-          img.src = dataUrl;
-        } catch(e) {
-          console.error('TIFF decode error:', e);
-          alert('Could not decode TIFF: ' + file.name + '\n' + e.message);
-          resolve(null);
+          placeholderImg.src = placeholderCanvas.toDataURL('image/png');
+          return;
         }
+
+        // Normal-sized TIFF: full UTIF decode
+        file.arrayBuffer().then(function(buf) {
+          try {
+            var ifds = UTIF.decode(buf);
+            UTIF.decodeImage(buf, ifds[0]);
+            var rgba = UTIF.toRGBA8(ifds[0]);
+            var pixW = ifds[0].width;
+            var pixH = ifds[0].height;
+
+            var tiffCanvas = document.createElement('canvas');
+            tiffCanvas.width = pixW; tiffCanvas.height = pixH;
+            var tCtx = tiffCanvas.getContext('2d');
+            var imgData = tCtx.createImageData(pixW, pixH);
+            imgData.data.set(new Uint8Array(rgba));
+            tCtx.putImageData(imgData, 0, 0);
+
+            var dataUrl = tiffCanvas.toDataURL('image/png');
+            var img = new Image();
+            img.onload = function() {
+              showRasterModal(file, pixW, pixH, dpi, img).then(function(result) {
+                resolve(result);
+              }).catch(function() { resolve(null); });
+            };
+            img.src = dataUrl;
+          } catch(e) {
+            console.error('TIFF decode error:', e);
+            // Fall back to IFD dimensions if available
+            if (ifdW && ifdH) {
+              var fbCanvas = document.createElement('canvas');
+              fbCanvas.width = 400; fbCanvas.height = 300;
+              var fbCtx = fbCanvas.getContext('2d');
+              fbCtx.fillStyle = '#f0f0f0'; fbCtx.fillRect(0, 0, 400, 300);
+              fbCtx.fillStyle = '#999'; fbCtx.font = '14px sans-serif'; fbCtx.textAlign = 'center';
+              fbCtx.fillText('Could not decode TIFF preview', 200, 145);
+              fbCtx.fillText('Dimensions from file header', 200, 168);
+              var fbImg = new Image();
+              fbImg.onload = function() {
+                showRasterModal(file, ifdW, ifdH, dpi, fbImg).then(function(result) {
+                  resolve(result);
+                }).catch(function() { resolve(null); });
+              };
+              fbImg.src = fbCanvas.toDataURL('image/png');
+            } else {
+              alert('Could not decode TIFF: ' + file.name + '\n' + e.message);
+              resolve(null);
+            }
+          }
+        }).catch(function(e) {
+          console.error('TIFF read error (file too large?):', e);
+          if (ifdW && ifdH) {
+            var errCanvas = document.createElement('canvas');
+            errCanvas.width = 400; errCanvas.height = 300;
+            var eCtx = errCanvas.getContext('2d');
+            eCtx.fillStyle = '#f0f0f0'; eCtx.fillRect(0, 0, 400, 300);
+            eCtx.fillStyle = '#999'; eCtx.font = '14px sans-serif'; eCtx.textAlign = 'center';
+            eCtx.fillText('TIFF too large for browser preview', 200, 145);
+            var errImg = new Image();
+            errImg.onload = function() {
+              showRasterModal(file, ifdW, ifdH, dpi, errImg).then(function(result) {
+                resolve(result);
+              }).catch(function() { resolve(null); });
+            };
+            errImg.src = errCanvas.toDataURL('image/png');
+          } else {
+            alert('Could not read TIFF: ' + file.name + ' (file may be too large for browser)');
+            resolve(null);
+          }
+        });
       } else {
-        // JPG/PNG: use native Image element
-        var blob = new Blob([buf], { type: file.type || 'image/png' });
-        var url = URL.createObjectURL(blob);
+        // JPG/PNG: use native Image element from blob URL — the browser's
+        // decoder handles large files efficiently without buffering everything.
+        var url = URL.createObjectURL(file);
         var img = new Image();
         img.onload = function() {
           var pixW = img.naturalWidth;
@@ -694,6 +814,10 @@ function processRasterFile(file) {
         };
         img.src = url;
       }
+    }).catch(function(e) {
+      console.error('Header read error:', e);
+      alert('Could not read file header: ' + file.name);
+      resolve(null);
     });
   });
 }
