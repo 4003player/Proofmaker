@@ -279,6 +279,7 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
       </div>
     </div>
     <div class="modal-divider"></div>
+    <div id="rm-die-notice" style="background:#f0fdf4;border:1px solid #86efac;color:#166534;padding:8px 12px;border-radius:8px;font-size:13px;font-weight:600;margin-bottom:12px;display:none;"></div>
     <div class="modal-field">
       <label>Resolution (DPI)</label>
       <input type="number" id="rm-dpi-input" value="300" min="1" max="9999" step="1">
@@ -675,6 +676,242 @@ function parseTiffIfdFull(d, base) {
   return { dpi: dpi, width: imgWidth, height: imgHeight };
 }
 
+// ── Detect spot channel names from TIFF metadata ──
+// Searches for Photoshop-style spot color channels.
+// Spots live in:
+//   1. TIFF tag 332 (InkNames) — null-separated ink name list
+//   2. TIFF tag 34377 (Photoshop Image Resources / 8BIM blocks)
+//      Resource ID 0x03F0 (1008) = ink names list
+//   3. Channel names inside Photoshop 8BIM data (various resource IDs)
+// Returns an array of { name, key } for each recognised die/cut spot channel.
+function detectTiffSpotChannels(d, base) {
+  if (!base) base = 0;
+  if (base + 8 > d.length) return [];
+  var le = (d[base]===0x49 && d[base+1]===0x49);
+  var be = (d[base]===0x4D && d[base+1]===0x4D);
+  if (!le && !be) return [];
+
+  function u16(off) {
+    off += base;
+    if (off+2 > d.length) return 0;
+    return le ? (d[off] | (d[off+1]<<8)) : ((d[off]<<8) | d[off+1]);
+  }
+  function u32(off) {
+    off += base;
+    if (off+4 > d.length) return 0;
+    return le ? ((d[off] | (d[off+1]<<8) | (d[off+2]<<16) | (d[off+3]<<24)) >>> 0)
+              : (((d[off]<<24) | (d[off+1]<<16) | (d[off+2]<<8) | d[off+3]) >>> 0);
+  }
+
+  var magic = u16(2);
+  if (magic !== 42) return [];
+  var ifdOff = u32(4);
+  if (ifdOff === 0 || base + ifdOff + 2 > d.length) return [];
+  var nEntries = u16(ifdOff);
+  if (nEntries === 0 || nEntries > 500) return [];
+
+  var results = [];
+  var seen = {};
+
+  function addIfDie(rawName) {
+    var key = rawName.toLowerCase().replace(/[\s_-]/g, '');
+    if (SPOT_COLOR_MAP[key] && !seen[key]) {
+      seen[key] = true;
+      results.push({
+        key: key,
+        name: SPOT_COLOR_MAP[key].label,
+        color: SPOT_COLOR_MAP[key].color,
+        rawName: rawName
+      });
+    }
+  }
+
+  for (var e = 0; e < nEntries; e++) {
+    var entryOff = ifdOff + 2 + e * 12;
+    if (base + entryOff + 12 > d.length) break;
+    var tag = u16(entryOff);
+    var type = u16(entryOff + 2);
+    var count = u32(entryOff + 4);
+    var valOff = u32(entryOff + 8);
+
+    // Tag 332 = InkNames: null-separated ink name strings
+    if (tag === 332 && type === 2 && count > 0) {
+      var inkOff = (count <= 4) ? (entryOff + 8) : valOff;
+      if (base + inkOff + count <= d.length) {
+        var inkStr = '';
+        for (var ib = 0; ib < count; ib++) {
+          var ch = d[base + inkOff + ib];
+          if (ch === 0) {
+            if (inkStr.length > 0) { addIfDie(inkStr.trim()); inkStr = ''; }
+          } else {
+            inkStr += String.fromCharCode(ch);
+          }
+        }
+        if (inkStr.length > 0) addIfDie(inkStr.trim());
+      }
+    }
+
+    // Tag 34377 = Photoshop Image Resources (8BIM blocks)
+    if (tag === 34377 && count > 10) {
+      var psOff = (count <= 4) ? (entryOff + 8) : valOff;
+      if (base + psOff + count <= d.length) {
+        var psEnd = psOff + count;
+        var pi = psOff;
+        while (pi + 12 <= psEnd) {
+          // 8BIM signature
+          if (d[base+pi]!==0x38 || d[base+pi+1]!==0x42 || d[base+pi+2]!==0x49 || d[base+pi+3]!==0x4D) break;
+          var resId = (d[base+pi+4] << 8) | d[base+pi+5];
+          // Pascal string (name): length byte then chars, padded to even
+          var nameLen = d[base+pi+6];
+          var nameBlock = nameLen + 1;
+          if (nameBlock % 2 !== 0) nameBlock++;
+          var dataLenOff = pi + 6 + nameBlock;
+          if (base + dataLenOff + 4 > d.length) break;
+          var dataLen = ((d[base+dataLenOff]<<24) | (d[base+dataLenOff+1]<<16) |
+                         (d[base+dataLenOff+2]<<8) | d[base+dataLenOff+3]) >>> 0;
+          var dataStart = dataLenOff + 4;
+          // Resource 0x03EE (1006) = Alpha Channel Names: null-separated Pascal strings
+          // Resource 0x03F0 (1008) = (obsolete) ink names
+          // Resource 0x0416 (1046) = Alpha Channel Unicode Names
+          if ((resId === 0x03EE || resId === 0x03F0) && dataLen > 0 && base + dataStart + dataLen <= d.length) {
+            var acn = '';
+            for (var ai = 0; ai < dataLen; ai++) {
+              var c = d[base + dataStart + ai];
+              if (c === 0) {
+                if (acn.length > 0) { addIfDie(acn.trim()); acn = ''; }
+              } else {
+                acn += String.fromCharCode(c);
+              }
+            }
+            if (acn.length > 0) addIfDie(acn.trim());
+          }
+          // Advance to next 8BIM block (data padded to even length)
+          var advance = dataLen;
+          if (advance % 2 !== 0) advance++;
+          pi = dataStart + advance;
+        }
+      }
+    }
+  }
+  return results;
+}
+
+// ── Detect die-line bounding box from TIFF spot channel pixels ──
+// Decodes the TIFF via UTIF, identifies spot channels whose names match
+// die/cut keywords, then scans those channel's pixel data for the non-zero
+// bounding box and computes the physical die dimensions from DPI.
+function detectTiffDieLineBbox(buf, spotChannels, dpi) {
+  if (!spotChannels || spotChannels.length === 0 || !dpi || dpi <= 0) return null;
+
+  // Die-line keywords we care about
+  var dieKeys = ['cutcontour','thrucut','die','dieline','diecut','trim','cutter','cut'];
+  var hasDieSpot = spotChannels.some(function(sc) { return dieKeys.indexOf(sc.key) >= 0; });
+  if (!hasDieSpot) return null;
+
+  try {
+    var ifds = UTIF.decode(buf);
+    if (!ifds || ifds.length === 0) return null;
+    var ifd = ifds[0];
+
+    // Determine how many process channels the image has.
+    // ExtraSamples tells UTIF which channels are alpha/spot.
+    // For a CMYK+Spot image: SamplesPerPixel = 5+, PhotometricInterpretation = 5 (Separated).
+    var spp = ifd.t258 ? ifd.t258.length : (ifd.t277 ? ifd.t277[0] : 0);
+    var photo = ifd.t262 ? ifd.t262[0] : 2; // PhotometricInterpretation
+    var processChannels;
+    if (photo === 5) processChannels = 4; // CMYK
+    else if (photo === 2) processChannels = 3; // RGB
+    else if (photo === 0 || photo === 1) processChannels = 1; // Grayscale
+    else processChannels = 3;
+
+    // Spot channels start after the process channels (+ possible alpha)
+    var extraSamples = ifd.t338 || []; // ExtraSamples tag
+    // extraSamples[n]: 0=unspecified, 1=associated alpha, 2=unassociated alpha
+    // Channels beyond processChannels that are NOT alpha are spot channels.
+    // The InkNames / Alpha Channel Names tags list them in order.
+
+    // We need the full decoded pixel data to scan spot channel values.
+    UTIF.decodeImage(buf, ifd);
+    var pixelData = new Uint8Array(UTIF.toRGBA8(ifd));
+    var w = ifd.width, h = ifd.height;
+
+    // UTIF.toRGBA8 only gives us RGBA — the spot channels are stripped.
+    // Instead, work with the raw decoded channel data.
+    // ifd.data after decodeImage contains the raw channel-interleaved pixel buffer
+    // at the bit depth from the file (8 or 16 bit per channel).
+    var rawData = ifd.data;
+    if (!rawData || rawData.length === 0) return null;
+
+    var bitsPerChannel = ifd.t258 ? ifd.t258[0] : 8;
+    var bytesPerChannel = Math.ceil(bitsPerChannel / 8);
+
+    // For each die-spot channel, find its index and scan for non-zero pixels
+    var minX = w, maxX = 0, minY = h, maxY = 0;
+    var found = false;
+
+    // Build list of die-channel indices (within the spot channels)
+    // InkNames lists process inks first (C,M,Y,K), then spot names
+    // Alpha Channel Names (8BIM 0x03EE) lists only the alpha/spot channels
+    // We match by name to find which extra channel index corresponds to each die spot
+
+    // Simple approach: for channel index = processChannels .. spp-1,
+    // check if it's a spot (not alpha) by extraSamples, and if the spot
+    // name matches a die keyword.
+    var spotIdx = 0;
+    for (var ci = processChannels; ci < spp; ci++) {
+      var esType = (ci - processChannels < extraSamples.length) ? extraSamples[ci - processChannels] : 0;
+      if (esType === 1 || esType === 2) continue; // skip alpha channels
+
+      // Check if this spot channel matches a die keyword
+      var isDieChannel = false;
+      if (spotIdx < spotChannels.length) {
+        isDieChannel = dieKeys.indexOf(spotChannels[spotIdx].key) >= 0;
+      }
+      spotIdx++;
+      if (!isDieChannel) continue;
+
+      // Scan this channel for non-zero pixels
+      for (var y = 0; y < h; y++) {
+        for (var x = 0; x < w; x++) {
+          var pixelOff = (y * w + x) * spp + ci;
+          var val;
+          if (bytesPerChannel === 1) {
+            val = rawData[pixelOff];
+          } else {
+            // 16-bit: just check MSB
+            val = rawData[pixelOff * 2] | rawData[pixelOff * 2 + 1];
+          }
+          if (val > 0) {
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+            found = true;
+          }
+        }
+      }
+    }
+
+    if (!found || maxX <= minX || maxY <= minY) return null;
+
+    var dieW = (maxX - minX + 1) / dpi;
+    var dieH = (maxY - minY + 1) / dpi;
+    // Sanity: die must be at least 1" in both dimensions
+    if (dieW < 1 || dieH < 1) return null;
+
+    return {
+      widthIn: dieW,
+      heightIn: dieH,
+      minX: minX, minY: minY, maxX: maxX, maxY: maxY,
+      pixW: maxX - minX + 1,
+      pixH: maxY - minY + 1
+    };
+  } catch(e) {
+    console.warn('Die line detection failed:', e);
+    return null;
+  }
+}
+
 // ── Read raster image dimensions + DPI and show modal ──
 function processRasterFile(file) {
   return new Promise(function(resolve, reject) {
@@ -692,6 +929,9 @@ function processRasterFile(file) {
     file.slice(0, headerSize).arrayBuffer().then(function(headerBuf) {
       var uint8 = new Uint8Array(headerBuf);
       var dpi = detectDpiFromBytes(uint8, file.name) || 0;
+
+      // Detect spot channel names from TIFF metadata (CutContour, Die, etc.)
+      var spotChannels = isTiff ? detectTiffSpotChannels(uint8, 0) : [];
 
       if (isTiff && typeof UTIF !== 'undefined') {
         // Try to get pixel dimensions from IFD tags (fast — no decode needed).
@@ -715,7 +955,7 @@ function processRasterFile(file) {
           pCtx.fillText(ifdW + ' × ' + ifdH + ' px', 200, 168);
           var placeholderImg = new Image();
           placeholderImg.onload = function() {
-            showRasterModal(file, ifdW, ifdH, dpi, placeholderImg).then(function(result) {
+            showRasterModal(file, ifdW, ifdH, dpi, placeholderImg, spotChannels, null).then(function(result) {
               resolve(result);
             }).catch(function() { resolve(null); });
           };
@@ -741,8 +981,13 @@ function processRasterFile(file) {
 
             var dataUrl = tiffCanvas.toDataURL('image/png');
             var img = new Image();
+            // Try die-line detection from spot channel pixels
+            var tiffDieBox = null;
+            if (spotChannels.length > 0 && dpi > 0) {
+              tiffDieBox = detectTiffDieLineBbox(buf, spotChannels, dpi);
+            }
             img.onload = function() {
-              showRasterModal(file, pixW, pixH, dpi, img).then(function(result) {
+              showRasterModal(file, pixW, pixH, dpi, img, spotChannels, tiffDieBox).then(function(result) {
                 resolve(result);
               }).catch(function() { resolve(null); });
             };
@@ -760,7 +1005,7 @@ function processRasterFile(file) {
               fbCtx.fillText('Dimensions from file header', 200, 168);
               var fbImg = new Image();
               fbImg.onload = function() {
-                showRasterModal(file, ifdW, ifdH, dpi, fbImg).then(function(result) {
+                showRasterModal(file, ifdW, ifdH, dpi, fbImg, spotChannels, null).then(function(result) {
                   resolve(result);
                 }).catch(function() { resolve(null); });
               };
@@ -781,7 +1026,7 @@ function processRasterFile(file) {
             eCtx.fillText('TIFF too large for browser preview', 200, 145);
             var errImg = new Image();
             errImg.onload = function() {
-              showRasterModal(file, ifdW, ifdH, dpi, errImg).then(function(result) {
+              showRasterModal(file, ifdW, ifdH, dpi, errImg, spotChannels, null).then(function(result) {
                 resolve(result);
               }).catch(function() { resolve(null); });
             };
@@ -801,7 +1046,7 @@ function processRasterFile(file) {
           var pixH = img.naturalHeight;
           URL.revokeObjectURL(url);
 
-          showRasterModal(file, pixW, pixH, dpi, img).then(function(result) {
+          showRasterModal(file, pixW, pixH, dpi, img, [], null).then(function(result) {
             resolve(result);
           }).catch(function() {
             resolve(null);
@@ -822,7 +1067,7 @@ function processRasterFile(file) {
   });
 }
 
-function showRasterModal(file, pixW, pixH, detectedDpi, imgEl) {
+function showRasterModal(file, pixW, pixH, detectedDpi, imgEl, spotChannels, dieLineBox) {
   return new Promise(function(resolve, reject) {
     var ext = file.name.split('.').pop().toUpperCase();
     if (ext === 'JPEG') ext = 'JPG';
@@ -838,6 +1083,31 @@ function showRasterModal(file, pixW, pixH, detectedDpi, imgEl) {
     rmDpi.textContent = detectedDpi > 0 ? detectedDpi + ' DPI' : 'Unknown';
     rmDpiHint.textContent = detectedDpi > 0 ? 'Auto-detected from file metadata' : 'Not found in file — enter manually';
     rmBleedInput.value = '0';
+
+    // Show die-line notice if detected
+    var dieNotice = document.getElementById('rm-die-notice');
+    if (dieLineBox && dieLineBox.widthIn > 0) {
+      var dieNames = (spotChannels || []).filter(function(sc) {
+        var dk = ['cutcontour','thrucut','die','dieline','diecut','trim','cutter','cut'];
+        return dk.indexOf(sc.key) >= 0;
+      }).map(function(sc) { return sc.name; }).join(', ');
+      dieNotice.innerHTML = '✂ Die line detected' + (dieNames ? ' (' + dieNames + ')' : '') +
+        '<br><span style="font-weight:400;font-size:12px;">Die size: ' +
+        dieLineBox.widthIn.toFixed(2) + '″ × ' + dieLineBox.heightIn.toFixed(2) + '″ — proof will use die dimensions</span>';
+      dieNotice.style.display = 'block';
+    } else if (spotChannels && spotChannels.length > 0) {
+      var spotNames = spotChannels.map(function(sc) { return sc.name; }).join(', ');
+      dieNotice.innerHTML = '🎨 Spot channels found: ' + spotNames;
+      dieNotice.style.display = 'block';
+      dieNotice.style.background = '#eff6ff';
+      dieNotice.style.borderColor = '#93c5fd';
+      dieNotice.style.color = '#1e40af';
+    } else {
+      dieNotice.style.display = 'none';
+      dieNotice.style.background = '';
+      dieNotice.style.borderColor = '';
+      dieNotice.style.color = '';
+    }
 
     function updateComputed() {
       var d = parseFloat(rmDpiInput.value) || 300;
@@ -936,7 +1206,9 @@ function showRasterModal(file, pixW, pixH, detectedDpi, imgEl) {
           trimW: trimW, trimH: trimH,
           format: ext,
           imgDataUrl: imgDataUrl,
-          hasWhiteEdges: hasWhiteEdges
+          hasWhiteEdges: hasWhiteEdges,
+          spotChannels: spotChannels || [],
+          dieLineBox: dieLineBox || null
         }
       });
     };
@@ -1019,7 +1291,11 @@ function renderFileList() {
       : '<span class="badge badge-pdf">PDF</span>';
     var infoText = sizeMB + ' MB';
     if (entry.type === 'raster') {
-      infoText = entry.rasterMeta.trimW.toFixed(1) + '" × ' + entry.rasterMeta.trimH.toFixed(1) + '" · ' + entry.rasterMeta.dpi + ' DPI';
+      if (entry.rasterMeta.dieLineBox && entry.rasterMeta.dieLineBox.widthIn > 0) {
+        infoText = '✂ ' + entry.rasterMeta.dieLineBox.widthIn.toFixed(1) + '" × ' + entry.rasterMeta.dieLineBox.heightIn.toFixed(1) + '" die · ' + entry.rasterMeta.dpi + ' DPI';
+      } else {
+        infoText = entry.rasterMeta.trimW.toFixed(1) + '" × ' + entry.rasterMeta.trimH.toFixed(1) + '" · ' + entry.rasterMeta.dpi + ' DPI';
+      }
     }
     li.innerHTML = '<span class="name">' + entry.file.name + badge + '</span>' +
       '<span class="info">' + infoText + '</span>' +
@@ -1805,9 +2081,10 @@ function drawProofPage(doc, frontImg, opts) {
 
   // ── Trim / die line indicator ──
   if (hasDieLine) {
+    var dieSource = (frontImg.rasterInfo) ? 'raster spot channel' : 'PDF';
     doc.setFont('helvetica', 'normal'); doc.setFontSize(7);
     doc.setTextColor(GRAY);
-    doc.text('\u2702 Die line detected from PDF', PW/2, legendY + 0.1, { align: 'center' });
+    doc.text('\u2702 Die line detected from ' + dieSource, PW/2, legendY + 0.1, { align: 'center' });
   } else if (hasTrim) {
     doc.setFont('helvetica', 'normal'); doc.setFontSize(7);
     doc.setTextColor(GRAY);
@@ -2153,7 +2430,8 @@ window.generateProof = function() {
           hasWhiteEdges: rm.hasWhiteEdges,
           totalPages: 1,
           trimBox: rm.bleed > 0 ? { widthIn: rm.trimW, heightIn: rm.trimH } : null,
-          spotColors: [],
+          spotColors: rm.spotChannels || [],
+          dieLineBox: rm.dieLineBox || null,
           rasterInfo: { dpi: rm.dpi, pixW: rm.pixW, pixH: rm.pixH, bleed: rm.bleed }
         });
       } else {
