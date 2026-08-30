@@ -1127,11 +1127,16 @@ function findSpotColors(uint8Array) {
       for (var k = i + sep.length; k < Math.min(i + sep.length + 120, uint8Array.length); k++) {
         chunk += String.fromCharCode(uint8Array[k]);
       }
-      // Match /Name or (Name) after whitespace
-      var m = chunk.match(/\s*\/?([A-Za-z_][\w\s]*?)(?:\s|\/|\[|\])/) ||
+      // Match /Name or (Name) after optional whitespace.
+      // PDF names can contain #XX hex-encoded chars (e.g. /Die#20Line = "Die Line")
+      // so the regex must allow # and hex digits inside the name token.
+      var m = chunk.match(/\s*\/?([A-Za-z_][\w#]*?)(?:\s|\/|\[|\])/) ||
               chunk.match(/\s*\(([^)]+)\)/);
       if (m) {
-        var rawName = m[1].trim();
+        // Decode PDF hex escapes: #XX → character (e.g. #20 → space)
+        var rawName = m[1].replace(/#([0-9A-Fa-f]{2})/g, function(_, hex) {
+          return String.fromCharCode(parseInt(hex, 16));
+        }).trim();
         // Normalize: lowercase, strip spaces/underscores for matching
         var key = rawName.toLowerCase().replace(/[\s_-]/g, '');
         if (SPOT_COLOR_MAP[key] && !found.some(function(f) { return f.key === key; })) {
@@ -1849,11 +1854,21 @@ function drawProofPage(doc, frontImg, opts) {
 
   if (spots.length > 0) {
     // Draw a legend swatch for each detected spot color
+    // Die/cut spots get a FILLED square in their color; non-die spots get outline only
+    var dieKeys = ['cutcontour','thrucut','die','dieline','diecut','trim','cutter','cut'];
     var xCursor = legendX;
     for (var si = 0; si < spots.length; si++) {
-      doc.setDrawColor(spots[si].color);
-      doc.setLineWidth(0.014);
-      doc.rect(xCursor, legendY, 0.12, 0.12);
+      var isDieSpot = dieKeys.indexOf(spots[si].key) >= 0;
+      if (isDieSpot) {
+        // Filled square for die/cut line spots
+        doc.setFillColor(spots[si].color);
+        doc.rect(xCursor, legendY, 0.12, 0.12, 'F');
+      } else {
+        // Outline square for finishing spots (score, perf, fold, etc.)
+        doc.setDrawColor(spots[si].color);
+        doc.setLineWidth(0.014);
+        doc.rect(xCursor, legendY, 0.12, 0.12);
+      }
       doc.setFont('helvetica', 'normal'); doc.setFontSize(7);
       doc.setTextColor(GRAY);
       doc.text(spots[si].name, xCursor + 0.16, legendY + 0.1);
