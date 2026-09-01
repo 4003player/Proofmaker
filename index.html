@@ -262,6 +262,22 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
   </div>
 </div>
 
+<!-- Odd page count warning modal for double-sided -->
+<div class="modal-overlay" id="odd-page-modal">
+  <div class="modal-box" style="max-width:480px;">
+    <h3>⚠️ Odd Page Count</h3>
+    <p style="font-size:14px;color:#666;margin-bottom:16px;">
+      You have <strong id="odd-page-count"></strong> pages but double-sided printing pairs them as front &amp; back.
+      The last page has no back — please check your page order is correct:
+    </p>
+    <div id="odd-page-list" style="max-height:200px;overflow-y:auto;border:1px solid #f0f0f0;border-radius:10px;margin-bottom:16px;"></div>
+    <div class="modal-actions">
+      <button class="modal-cancel" id="odd-cancel">✕ Cancel</button>
+      <button class="modal-ok" id="odd-continue">Continue ▸</button>
+    </div>
+  </div>
+</div>
+
 <!-- Raster file info modal -->
 <div class="modal-overlay" id="raster-modal">
   <div class="modal-box">
@@ -541,9 +557,9 @@ function detectDpiFromBytes(uint8, filename) {
   var dpi = null;
   var lower = filename.toLowerCase();
 
-  // JPEG: look for JFIF APP0 (FFD8 FFE0) or EXIF APP1 (FFD8 FFE1)
+  // JPEG: try JFIF APP0, EXIF APP1, then Photoshop APP13 (8BIM ResolutionInfo)
   if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
-    dpi = parseJfifDpi(uint8) || parseExifDpi(uint8);
+    dpi = parseJfifDpi(uint8) || parseExifDpi(uint8) || parsePhotoshopDpi(uint8);
   }
   // PNG: look for pHYs chunk
   else if (lower.endsWith('.png')) {
@@ -596,8 +612,11 @@ function parseJfifDpi(d) {
         var xd = (d[i + 12] << 8) | d[i + 13];
         if (unit === 1 && xd > 0) return xd; // dots per inch
         if (unit === 2 && xd > 0) return Math.round(xd * 2.54); // dots per cm → dpi
-      }
-    }
+                // unit 0 = "aspect ratio only" but many JPEG encoders still store real DPI;
+                // if value looks like a typical print DPI (72–1200), use it as best-guess
+                if (unit === 0 && xd >= 72 && xd <= 1200) return xd;
+              }
+            }
     i += 2 + segLen;
   }
   return null;
@@ -623,6 +642,58 @@ function parseExifDpi(d) {
         var tiffStart = i + 10; // after marker(2)+len(2)+Exif\0\0(6)
         var info = parseTiffIfdFull(d, tiffStart);
         if (info && info.dpi) return info.dpi;
+      }
+    }
+    i += 2 + segLen;
+  }
+  return null;
+}
+
+function parsePhotoshopDpi(d) {
+  // Photoshop APP13 (FFED): look for 8BIM resource 0x03ED (ResolutionInfo)
+  // Format: fixed-point 16.16 hRes, uint16 hResUnit (1=ppi, 2=ppcm), ...
+  if (d.length < 20 || d[0] !== 0xFF || d[1] !== 0xD8) return null;
+  var limit = Math.min(d.length, 1048576); // scan up to 1 MB (large ICC profiles push APP13 far out)
+  var i = 2;
+  while (i >= 0 && i < limit - 10) {
+    // Find next marker
+    if (d[i] !== 0xFF) { i++; continue; }
+    while (i < limit - 1 && d[i] === 0xFF && d[i + 1] === 0xFF) i++;
+    if (i >= limit - 4) break;
+    var marker = d[i + 1];
+    if (marker === 0xDA) break; // SOS
+    if (marker === 0x00 || marker === 0x01 || (marker >= 0xD0 && marker <= 0xD9)) { i += 2; continue; }
+    var segLen = (d[i + 2] << 8) | d[i + 3];
+    if (segLen < 2) { i += 2; continue; }
+    if (marker === 0xED) { // APP13
+      // Check for "Photoshop 3.0 " header
+      var segEnd = Math.min(i + 2 + segLen, limit);
+      var j = i + 4;
+      // Walk 8BIM resource blocks
+      while (j < segEnd - 12) {
+        if (d[j] === 0x38 && d[j+1] === 0x42 && d[j+2] === 0x49 && d[j+3] === 0x4D) { // "8BIM"
+          var resId = (d[j + 4] << 8) | d[j + 5];
+          // Skip pascal string (padded to even length)
+          var pLen = d[j + 6];
+          if (pLen % 2 === 0) pLen++;
+          var dataOff = j + 7 + pLen;
+          if (dataOff + 4 > segEnd) break;
+          var dataLen = ((d[dataOff] << 24) | (d[dataOff+1] << 16) | (d[dataOff+2] << 8) | d[dataOff+3]) >>> 0;
+          dataOff += 4;
+          if (resId === 0x03ED && dataLen >= 8 && dataOff + 8 <= segEnd) {
+            // ResolutionInfo: 4 bytes fixed-point 16.16 hRes, 2 bytes hResUnit
+            var hResFixed = ((d[dataOff] << 24) | (d[dataOff+1] << 16) | (d[dataOff+2] << 8) | d[dataOff+3]) >>> 0;
+            var hRes = hResFixed / 65536;
+            var hResUnit = (d[dataOff + 4] << 8) | d[dataOff + 5]; // 1=ppi, 2=ppcm
+            if (hRes > 0) {
+              return hResUnit === 2 ? Math.round(hRes * 2.54) : Math.round(hRes);
+            }
+          }
+          j = dataOff + dataLen;
+          if (dataLen % 2 !== 0) j++; // pad to even
+        } else {
+          j++;
+        }
       }
     }
     i += 2 + segLen;
@@ -701,12 +772,18 @@ function parseTiffIfdFull(d, base) {
     if (tag === 0x0128) {
       resUnit = (type === 3) ? u16(entryOff + 8) : valOff;
     }
-    // XResolution (tag 0x011A) — RATIONAL type 5 stored at valOff
-    if (tag === 0x011A && type === 5) {
-      if (base + valOff + 8 <= d.length) {
-        var num = u32(valOff);
-        var den = u32(valOff + 4);
-        if (den > 0) xRes = num / den;
+    // XResolution (tag 0x011A) — RATIONAL, SHORT, or LONG
+    if (tag === 0x011A) {
+      if (type === 5) { // RATIONAL: num/den stored at valOff
+        if (base + valOff + 8 <= d.length) {
+          var num = u32(valOff);
+          var den = u32(valOff + 4);
+          if (den > 0) xRes = num / den;
+        }
+      } else if (type === 3) { // SHORT
+        xRes = u16(entryOff + 8);
+      } else if (type === 4) { // LONG
+        xRes = valOff;
       }
     }
   }
@@ -730,7 +807,7 @@ function processRasterFile(file) {
     // to the directory, and RATIONAL resolution values sit near it).
     var headerSize = isTiff
       ? Math.min(file.size, 4 * 1024 * 1024)   // 4 MB for TIFF
-      : Math.min(file.size, 256 * 1024);         // 256 KB for JPEG/PNG
+      : Math.min(file.size, 1024 * 1024);        // 1 MB for JPEG/PNG (large ICC profiles push metadata further)
 
     file.slice(0, headerSize).arrayBuffer().then(function(headerBuf) {
       var uint8 = new Uint8Array(headerBuf);
@@ -991,17 +1068,33 @@ var pendingRasterQueue = [];
 var processingRaster = false;
 
 function addAcceptedFiles(fileArray) {
-  var pdfAdded = false;
+  var pdfs = [];
   for (var i = 0; i < fileArray.length; i++) {
     var f = fileArray[i];
     if (isPdfFile(f.name)) {
-      allFiles.push({ file: f, type: 'pdf' });
-      pdfAdded = true;
+      pdfs.push(f);
     } else if (isRasterFile(f.name)) {
       pendingRasterQueue.push(f);
     }
   }
-  if (pdfAdded) renderFileList();
+  // Expand multipage PDFs into per-page entries
+  var pdfPromises = pdfs.map(function(f) {
+    return f.arrayBuffer().then(function(buf) {
+      return pdfjsLib.getDocument({ data: buf }).promise.then(function(pdf) {
+        var n = pdf.numPages;
+        for (var p = 1; p <= n; p++) {
+          allFiles.push({ file: f, type: 'pdf', pdfPageNum: p, pdfTotalPages: n });
+        }
+        pdf.destroy();
+      });
+    });
+  });
+  Promise.all(pdfPromises).then(function() {
+    renderFileList();
+  }).catch(function(e) {
+    console.error('Error reading PDFs:', e);
+    renderFileList();
+  });
   processNextRaster();
 }
 
@@ -1060,12 +1153,16 @@ function renderFileList() {
     var badge = entry.type === 'raster'
       ? '<span class="badge badge-img">' + entry.rasterMeta.format + '</span>'
       : '<span class="badge badge-pdf">PDF</span>';
+    var displayName = entry.file.name;
+    if (entry.type === 'pdf' && entry.pdfTotalPages > 1) {
+      displayName += ' (pg ' + entry.pdfPageNum + '/' + entry.pdfTotalPages + ')';
+    }
     var infoText = sizeMB + ' MB';
     if (entry.type === 'raster') {
       infoText = entry.rasterMeta.trimW.toFixed(1) + '" × ' + entry.rasterMeta.trimH.toFixed(1) + '" · ' + entry.rasterMeta.dpi + ' DPI';
     }
     var savedQty = entry.perQty || '';
-    li.innerHTML = '<span class="name">' + entry.file.name + badge + '</span>' +
+    li.innerHTML = '<span class="name">' + displayName + badge + '</span>' +
       '<span class="info">' + infoText + '</span>' +
       '<input type="text" class="qty-input" placeholder="Qty" value="' + savedQty + '" data-file-idx="' + i + '" onchange="window._setFileQty(' + i + ', this.value)" oninput="window._setFileQty(' + i + ', this.value)">' +
       '<button class="remove" onclick="window._removeFile(' + i + ')">✕</button>';
@@ -1343,7 +1440,7 @@ function findTrimBox(uint8Array) {
   if (uint8Array.length > searchLen) {
     scanRange(uint8Array.length - 1024 * 1024, uint8Array.length);
   }
-  return results.length > 0 ? results[0] : null;
+  return results;
 }
 
 // Detect crop marks visually when TrimBox metadata is missing.
@@ -1411,13 +1508,29 @@ function detectCropMarksVisual(canvas) {
 function renderPdfPageToImage(file, pageNum) {
   return file.arrayBuffer().then(function(arrayBuf) {
     var rawBytes = new Uint8Array(arrayBuf);
-    var trimBox = findTrimBox(rawBytes);
+    var allTrimBoxes = findTrimBox(rawBytes);
     var spotColors = findSpotColors(rawBytes);
     return pdfjsLib.getDocument({ data: arrayBuf }).promise.then(function(pdf) {
       return pdf.getPage(pageNum).then(function(page) {
         var vp = page.getViewport({ scale: 1.0 });
         var widthIn = vp.width / 72;
         var heightIn = vp.height / 72;
+        // Pick the TrimBox that fits inside this page's MediaBox (closest match)
+        var trimBox = null;
+        if (allTrimBoxes.length === 1) {
+          // Single TrimBox — only use it if it fits this page
+          var tb = allTrimBoxes[0];
+          if (tb.widthIn <= widthIn + 0.1 && tb.heightIn <= heightIn + 0.1) trimBox = tb;
+        } else if (allTrimBoxes.length > 1) {
+          // Multiple TrimBoxes — find the one whose dimensions best fit this page
+          var bestDiff = Infinity;
+          allTrimBoxes.forEach(function(tb) {
+            if (tb.widthIn <= widthIn + 0.1 && tb.heightIn <= heightIn + 0.1) {
+              var diff = Math.abs(tb.widthIn - widthIn) + Math.abs(tb.heightIn - heightIn);
+              if (diff < bestDiff) { bestDiff = diff; trimBox = tb; }
+            }
+          });
+        }
         var longestIn = Math.max(widthIn, heightIn);
         var dpi = longestIn > 70 ? 110 : 150;
         var maxPixels = 40000000;
@@ -2022,8 +2135,20 @@ function collectAllResolutions(pagePlan, scale) {
               var vp = page.getViewport({ scale: 1.0 });
               var pageW = vp.width / 72;
               var pageH = vp.height / 72;
-              // Check TrimBox for actual print size
-              var trimBox = findTrimBox(uint8);
+              // Check TrimBox for actual print size — pick best match for this page
+              var allTB = findTrimBox(uint8);
+              var trimBox = null;
+              if (allTB.length === 1 && allTB[0].widthIn <= pageW + 0.1 && allTB[0].heightIn <= pageH + 0.1) {
+                trimBox = allTB[0];
+              } else if (allTB.length > 1) {
+                var bestDiff = Infinity;
+                allTB.forEach(function(tb) {
+                  if (tb.widthIn <= pageW + 0.1 && tb.heightIn <= pageH + 0.1) {
+                    var diff = Math.abs(tb.widthIn - pageW) + Math.abs(tb.heightIn - pageH);
+                    if (diff < bestDiff) { bestDiff = diff; trimBox = tb; }
+                  }
+                });
+              }
               if (trimBox) {
                 pageW = trimBox.widthIn;
                 pageH = trimBox.heightIn;
@@ -2132,23 +2257,17 @@ window.generateProof = function() {
       fileIdx++;
       readNextFile();
     } else {
-      // PDF: read pages
-      var file = entry.file;
-      file.arrayBuffer().then(function(buf) {
-        return pdfjsLib.getDocument({ data: buf }).promise;
-      }).then(function(pdf) {
-        var n = pdf.numPages;
-        for (var p = 1; p <= n; p++) {
-          pagePlan.push({ type: 'pdf', file: entry.file, pageNum: p, filename: entry.file.name, totalPages: n, perQty: entry.perQty || '' });
-        }
-        pdf.destroy();
-        fileIdx++;
-        readNextFile();
-      }).catch(function(e) {
-        console.error('Error reading', entry.file.name, e);
-        fileIdx++;
-        readNextFile();
+      // PDF: pages are pre-expanded, use stored page number
+      pagePlan.push({
+        type: 'pdf',
+        file: entry.file,
+        pageNum: entry.pdfPageNum || 1,
+        filename: entry.file.name,
+        totalPages: entry.pdfTotalPages || 1,
+        perQty: entry.perQty || ''
       });
+      fileIdx++;
+      readNextFile();
     }
   }
 
@@ -2203,6 +2322,46 @@ window.generateProof = function() {
     function buildSheets(resNote) {
 
     // Detect double-sided from print type
+    var pt = printType.toLowerCase();
+    var isDoubleSided = ['4/4','1/1','2/2','6/6','double'].some(function(x) { return pt.indexOf(x) >= 0; });
+    var dblSame = document.getElementById('dbl_same_toggle').checked;
+
+    // Odd page count warning for double-sided (not same-art)
+    if (isDoubleSided && !dblSame && pagePlan.length % 2 !== 0) {
+      progressOverlay.classList.remove('active');
+      // Show the warning modal
+      var oddModal = document.getElementById('odd-page-modal');
+      document.getElementById('odd-page-count').textContent = pagePlan.length;
+      var oddList = document.getElementById('odd-page-list');
+      oddList.innerHTML = '';
+      for (var oi = 0; oi < pagePlan.length; oi += 2) {
+        var row = document.createElement('div');
+        row.style.cssText = 'padding:8px 12px;font-size:13px;border-bottom:1px solid #f5f5f5;display:flex;justify-content:space-between;';
+        var frontName = pagePlan[oi].filename;
+        if (pagePlan[oi].totalPages > 1) frontName += ' (pg ' + pagePlan[oi].pageNum + ')';
+        var backName = (oi + 1 < pagePlan.length)
+          ? (function() { var b = pagePlan[oi+1]; var n = b.filename; if (b.totalPages > 1) n += ' (pg ' + b.pageNum + ')'; return n; })()
+          : '<em style="color:#dc2626;">No back page</em>';
+        row.innerHTML = '<span><strong>Sheet ' + (Math.floor(oi/2)+1) + ':</strong> ' + frontName + '</span><span> ↔ ' + backName + '</span>';
+        oddList.appendChild(row);
+      }
+      oddModal.classList.add('active');
+      return new Promise(function(resolve) {
+        document.getElementById('odd-cancel').onclick = function() {
+          oddModal.classList.remove('active');
+        };
+        document.getElementById('odd-continue').onclick = function() {
+          oddModal.classList.remove('active');
+          progressOverlay.classList.add('active');
+          doBuildSheets(resNote);
+        };
+      });
+    }
+    doBuildSheets(resNote);
+    }
+
+    function doBuildSheets(resNote) {
+
     var pt = printType.toLowerCase();
     var isDoubleSided = ['4/4','1/1','2/2','6/6','double'].some(function(x) { return pt.indexOf(x) >= 0; });
     var dblSame = document.getElementById('dbl_same_toggle').checked;
@@ -2336,7 +2495,7 @@ window.generateProof = function() {
     }
 
     renderNextSheet();
-    } // end buildSheets
+    } // end doBuildSheets
   } // end processPages
 
   readNextFile();
