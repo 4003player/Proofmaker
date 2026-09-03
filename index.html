@@ -131,6 +131,7 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
 /* Result */
 .result-section { display: none; }
 .result-section.active { display: block; }
+.result-section.active.container { max-width: 900px; }
 .result-banner {
   background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534;
   padding: 16px 20px; border-radius: 12px; text-align: center;
@@ -151,6 +152,49 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
   background: #e8e8ed; color: #1d1d1f; transition: all 0.2s;
 }
 .btn-new:hover { background: #dcdce0; }
+
+/* PDF Preview Viewer */
+.preview-viewer {
+  background: #fff; border-radius: 14px; overflow: hidden;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.08); margin-bottom: 20px;
+}
+.preview-toolbar {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 14px; background: #f5f5f7; border-bottom: 1px solid #e8e8ed;
+  flex-wrap: wrap;
+}
+.preview-toolbar button {
+  background: #fff; border: 1px solid #d2d2d7; border-radius: 8px;
+  padding: 6px 12px; font-size: 13px; font-weight: 500; cursor: pointer;
+  color: #1d1d1f; transition: all 0.15s; display: inline-flex; align-items: center; gap: 4px;
+}
+.preview-toolbar button:hover { background: #e8e8ed; border-color: #bbb; }
+.preview-toolbar button:active { background: #dcdce0; }
+.preview-toolbar button:disabled { opacity: 0.4; cursor: not-allowed; }
+.preview-toolbar .tb-sep {
+  width: 1px; height: 20px; background: #d2d2d7; margin: 0 4px;
+}
+.preview-toolbar .tb-page-info {
+  font-size: 13px; color: #666; font-weight: 500; min-width: 70px; text-align: center;
+}
+.preview-toolbar .tb-zoom-info {
+  font-size: 12px; color: #86868b; font-weight: 500; min-width: 44px; text-align: center;
+}
+.preview-canvas-wrap {
+  position: relative; overflow: auto; background: #e8e8ed;
+  height: 540px; display: flex; justify-content: center; align-items: flex-start;
+  padding: 16px;
+}
+.preview-canvas-wrap canvas {
+  box-shadow: 0 2px 16px rgba(0,0,0,0.15); background: #fff;
+}
+.preview-viewer.fullscreen {
+  position: fixed; inset: 0; z-index: 10002; border-radius: 0;
+  display: flex; flex-direction: column;
+}
+.preview-viewer.fullscreen .preview-canvas-wrap {
+  flex: 1; height: auto;
+}
 
 .footer { text-align: center; margin-top: 20px; font-size: 11px; color: #bbb; }
 
@@ -450,8 +494,22 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
 <!-- Result section -->
 <div class="container result-section" id="result-section">
   <div class="result-banner">✅ Proof sheet ready!</div>
-  <div style="background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.08);margin-bottom:20px;">
-    <iframe id="preview-frame" style="width:100%;height:500px;border:none;"></iframe>
+  <div class="preview-viewer" id="preview-viewer">
+    <div class="preview-toolbar">
+      <button id="pv-prev" title="Previous page">◀</button>
+      <span class="tb-page-info" id="pv-page-info">1 / 1</span>
+      <button id="pv-next" title="Next page">▶</button>
+      <div class="tb-sep"></div>
+      <button id="pv-zoom-out" title="Zoom out">−</button>
+      <span class="tb-zoom-info" id="pv-zoom-info">100%</span>
+      <button id="pv-zoom-in" title="Zoom in">+</button>
+      <button id="pv-fit" title="Fit to width">⊞ Fit</button>
+      <div class="tb-sep"></div>
+      <button id="pv-fullscreen" title="Fullscreen">⛶ Fullscreen</button>
+    </div>
+    <div class="preview-canvas-wrap" id="pv-canvas-wrap">
+      <canvas id="pv-canvas"></canvas>
+    </div>
   </div>
   <div class="result-actions">
     <a id="download-link" class="btn-download" download>⬇ Download PDF</a>
@@ -1042,6 +1100,7 @@ function showRasterModal(file, pixW, pixH, detectedDpi, imgEl) {
       }
       var hasWhiteEdges = (rS/cnt > 240 && gS/cnt > 240 && bS/cnt > 240);
 
+      applyCMYKSimulation(canvas);
       var imgDataUrl = canvas.toDataURL('image/jpeg', 0.82);
 
       cleanup();
@@ -1505,6 +1564,32 @@ function detectCropMarksVisual(canvas) {
   return { leftPx: left, topPx: top, rightPx: right, bottomPx: bottom };
 }
 
+// ── CMYK gamut simulation ──
+// Desaturates canvas pixels to approximate CMYK print output.
+// Highly saturated blues and greens (most out-of-gamut in CMYK) get extra compression.
+function applyCMYKSimulation(canvas) {
+  var ctx = canvas.getContext('2d');
+  var imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  var d = imgData.data;
+  for (var i = 0; i < d.length; i += 4) {
+    var r = d[i], g = d[i+1], b = d[i+2];
+    var lum = 0.299 * r + 0.587 * g + 0.114 * b;
+    // Base desaturation: keep 85% of chroma, blend 15% toward neutral gray
+    var factor = 0.85;
+    // Extra compression for hues most out-of-gamut in CMYK
+    var mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+    var sat = mx === 0 ? 0 : (mx - mn) / mx;
+    if (sat > 0.3) {
+      if (b > r && b > g) factor *= 0.85;       // vivid blues → most loss
+      else if (g > r && g > b) factor *= 0.90;   // vivid greens → moderate loss
+    }
+    d[i]   = Math.max(0, Math.min(255, Math.round(lum + factor * (r - lum))));
+    d[i+1] = Math.max(0, Math.min(255, Math.round(lum + factor * (g - lum))));
+    d[i+2] = Math.max(0, Math.min(255, Math.round(lum + factor * (b - lum))));
+  }
+  ctx.putImageData(imgData, 0, 0);
+}
+
 function renderPdfPageToImage(file, pageNum) {
   return file.arrayBuffer().then(function(arrayBuf) {
     var rawBytes = new Uint8Array(arrayBuf);
@@ -1659,6 +1744,7 @@ function renderPdfPageToImage(file, pageNum) {
             finalCanvas = resized;
           }
 
+          applyCMYKSimulation(finalCanvas);
           var imgDataUrl = finalCanvas.toDataURL('image/jpeg', 0.82);
           var totalPages = pdf.numPages;
           pdf.destroy();
@@ -1782,8 +1868,8 @@ function drawProofPage(doc, frontImg, opts) {
     field('Finished Size', fmtDim(actualW) + ' \u00d7 ' + fmtDim(actualH));
   }
 
-  // Raster file info (resolution + pixel dims)
-  if (frontImg.rasterInfo) {
+  // Raster file info (resolution + pixel dims) — hidden when bypass was chosen
+  if (frontImg.rasterInfo && !opts.hideResolution) {
     field('Resolution', frontImg.rasterInfo.dpi + ' DPI');
     field('Pixels', frontImg.rasterInfo.pixW + ' \u00d7 ' + frontImg.rasterInfo.pixH + ' px');
   }
@@ -2293,9 +2379,10 @@ window.generateProof = function() {
           }
           // Resume progress
           progressOverlay.classList.add('active');
-          // 'continue' = add resolution note to proof, 'bypass' = ignore
+          // 'continue' = add resolution note to proof, 'bypass' = hide all resolution info
           var resNote = (choice === 'continue') ? buildResNote(allRes) : null;
-          buildSheets(resNote);
+          var hideRes = (choice === 'bypass');
+          buildSheets(resNote, hideRes);
         });
       } else {
         // All resolutions OK — proceed without warning
@@ -2319,7 +2406,7 @@ window.generateProof = function() {
       return '*Note: image resolutions are ' + minDpi + ' \u2013 ' + maxDpi + ' DPI';
     }
 
-    function buildSheets(resNote) {
+    function buildSheets(resNote, hideRes) {
 
     // Detect double-sided from print type
     var pt = printType.toLowerCase();
@@ -2353,14 +2440,14 @@ window.generateProof = function() {
         document.getElementById('odd-continue').onclick = function() {
           oddModal.classList.remove('active');
           progressOverlay.classList.add('active');
-          doBuildSheets(resNote);
+          doBuildSheets(resNote, hideRes);
         };
       });
     }
-    doBuildSheets(resNote);
+    doBuildSheets(resNote, hideRes);
     }
 
-    function doBuildSheets(resNote) {
+    function doBuildSheets(resNote, hideRes) {
 
     var pt = printType.toLowerCase();
     var isDoubleSided = ['4/4','1/1','2/2','6/6','double'].some(function(x) { return pt.indexOf(x) >= 0; });
@@ -2445,7 +2532,8 @@ window.generateProof = function() {
             filename: sheet.front.filename, pageLabel: pageLabel, branded: branded,
             backImg: backImg,
             backFilename: sheet.back ? sheet.back.filename : '',
-            resNote: resNote
+            resNote: resNote,
+            hideResolution: hideRes
           });
 
           sheetIdx++;
@@ -2487,7 +2575,8 @@ window.generateProof = function() {
       downloadLink.href = url;
       downloadLink.download = safeName;
 
-      document.getElementById('preview-frame').src = url;
+      // ── Canvas-based PDF preview viewer ──
+      initPreviewViewer(blob);
 
       progressOverlay.classList.remove('active');
       document.getElementById('form-section').style.display = 'none';
@@ -2501,9 +2590,93 @@ window.generateProof = function() {
   readNextFile();
 };
 
+// ── PDF Preview Viewer (canvas-based with zoom/page/fullscreen) ──
+var _pvPdf = null, _pvPage = 1, _pvTotal = 1, _pvZoom = 1.0;
+
+function initPreviewViewer(blob) {
+  blob.arrayBuffer().then(function(buf) {
+    pdfjsLib.getDocument({ data: buf }).promise.then(function(pdf) {
+      _pvPdf = pdf;
+      _pvTotal = pdf.numPages;
+      _pvPage = 1;
+      _pvZoom = 1.0;
+      pvRender();
+      pvUpdateControls();
+    });
+  });
+}
+
+function pvRender() {
+  if (!_pvPdf) return;
+  _pvPdf.getPage(_pvPage).then(function(page) {
+    var wrap = document.getElementById('pv-canvas-wrap');
+    // Fit-to-width: base scale so page fills the wrap width minus padding
+    var wrapW = wrap.clientWidth - 32;
+    var baseVp = page.getViewport({ scale: 1.0 });
+    var fitScale = wrapW / baseVp.width;
+    var renderScale = fitScale * _pvZoom;
+    var vp = page.getViewport({ scale: renderScale });
+
+    var canvas = document.getElementById('pv-canvas');
+    canvas.width = vp.width;
+    canvas.height = vp.height;
+    var ctx = canvas.getContext('2d');
+    page.render({ canvasContext: ctx, viewport: vp }).promise.then(function() {
+      pvUpdateControls();
+    });
+  });
+}
+
+function pvUpdateControls() {
+  document.getElementById('pv-page-info').textContent = _pvPage + ' / ' + _pvTotal;
+  document.getElementById('pv-zoom-info').textContent = Math.round(_pvZoom * 100) + '%';
+  document.getElementById('pv-prev').disabled = (_pvPage <= 1);
+  document.getElementById('pv-next').disabled = (_pvPage >= _pvTotal);
+}
+
+document.getElementById('pv-prev').addEventListener('click', function() {
+  if (_pvPage > 1) { _pvPage--; pvRender(); }
+});
+document.getElementById('pv-next').addEventListener('click', function() {
+  if (_pvPage < _pvTotal) { _pvPage++; pvRender(); }
+});
+document.getElementById('pv-zoom-in').addEventListener('click', function() {
+  _pvZoom = Math.min(4.0, _pvZoom + 0.25); pvRender();
+});
+document.getElementById('pv-zoom-out').addEventListener('click', function() {
+  _pvZoom = Math.max(0.25, _pvZoom - 0.25); pvRender();
+});
+document.getElementById('pv-fit').addEventListener('click', function() {
+  _pvZoom = 1.0; pvRender();
+});
+document.getElementById('pv-fullscreen').addEventListener('click', function() {
+  var viewer = document.getElementById('preview-viewer');
+  viewer.classList.toggle('fullscreen');
+  var btn = document.getElementById('pv-fullscreen');
+  btn.textContent = viewer.classList.contains('fullscreen') ? '✕ Exit' : '⛶ Fullscreen';
+  // Re-render at new container width
+  setTimeout(function() { pvRender(); }, 50);
+});
+// Escape key exits fullscreen
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') {
+    var viewer = document.getElementById('preview-viewer');
+    if (viewer.classList.contains('fullscreen')) {
+      viewer.classList.remove('fullscreen');
+      document.getElementById('pv-fullscreen').textContent = '⛶ Fullscreen';
+      setTimeout(function() { pvRender(); }, 50);
+    }
+  }
+});
+
 window.resetForm = function() {
   document.getElementById('result-section').classList.remove('active');
   document.getElementById('form-section').style.display = 'block';
+  // Clean up preview viewer
+  var viewer = document.getElementById('preview-viewer');
+  if (viewer.classList.contains('fullscreen')) viewer.classList.remove('fullscreen');
+  document.getElementById('pv-fullscreen').textContent = '⛶ Fullscreen';
+  if (_pvPdf) { _pvPdf.destroy(); _pvPdf = null; }
   allFiles = [];
   renderFileList();
 };
