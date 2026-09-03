@@ -1748,7 +1748,7 @@ function renderPdfPageToImage(file, pageNum) {
           var imgDataUrl = finalCanvas.toDataURL('image/jpeg', 0.82);
           var totalPages = pdf.numPages;
           pdf.destroy();
-          return { imgDataUrl: imgDataUrl, widthIn: widthIn, heightIn: heightIn, hasWhiteEdges: hasWhiteEdges, totalPages: totalPages, trimBox: trimBox, spotColors: spotColors, dieLineBox: dieLineBox };
+          return { imgDataUrl: imgDataUrl, widthIn: widthIn, heightIn: heightIn, imgPixW: finalCanvas.width, imgPixH: finalCanvas.height, hasWhiteEdges: hasWhiteEdges, totalPages: totalPages, trimBox: trimBox, spotColors: spotColors, dieLineBox: dieLineBox };
         });
       });
     });
@@ -1922,7 +1922,8 @@ function drawProofPage(doc, frontImg, opts) {
     var gap = 0.2;
     var singleSlotW = (artW - dimM - gap) / 2;
     var availH_dual = artH - dimM - 0.55;
-    var imgAspect = frontImg.widthIn / frontImg.heightIn;
+    // Use actual rendered pixel ratio for correct proportions (critical for die-line crops)
+    var imgAspect = (frontImg.imgPixW || frontImg.widthIn) / (frontImg.imgPixH || frontImg.heightIn);
 
     var drawW = singleSlotW;
     var drawH = drawW / imgAspect;
@@ -1995,7 +1996,8 @@ function drawProofPage(doc, frontImg, opts) {
     var availW = artW - dimM;
     var availH_single = artH - dimM - 0.3;
 
-    var imgAspect = frontImg.widthIn / frontImg.heightIn;
+    // Use actual rendered pixel ratio for correct proportions (critical for die-line crops)
+    var imgAspect = (frontImg.imgPixW || frontImg.widthIn) / (frontImg.imgPixH || frontImg.heightIn);
     var drawW = availW;
     var drawH = drawW / imgAspect;
     if (drawH > availH_single) { drawH = availH_single; drawW = drawH * imgAspect; }
