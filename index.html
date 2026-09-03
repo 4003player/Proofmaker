@@ -182,11 +182,12 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
 }
 .preview-canvas-wrap {
   position: relative; overflow: auto; background: #e8e8ed;
-  height: 540px; display: flex; justify-content: center; align-items: flex-start;
+  height: 540px; display: block;
   padding: 16px;
 }
 .preview-canvas-wrap canvas {
   box-shadow: 0 2px 16px rgba(0,0,0,0.15); background: #fff;
+  display: block; margin: 0 auto;
 }
 .preview-viewer.fullscreen {
   position: fixed; inset: 0; z-index: 10002; border-radius: 0;
