@@ -1566,8 +1566,8 @@ function detectCropMarksVisual(canvas) {
 }
 
 // ── CMYK gamut simulation ──
-// Desaturates canvas pixels to approximate CMYK print output.
-// Highly saturated blues and greens (most out-of-gamut in CMYK) get extra compression.
+// Desaturates + dims canvas pixels to approximate CMYK print output.
+// Backlit screens are brighter than ink-on-paper; this bridges the gap.
 function applyCMYKSimulation(canvas) {
   var ctx = canvas.getContext('2d');
   var imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -1575,18 +1575,27 @@ function applyCMYKSimulation(canvas) {
   for (var i = 0; i < d.length; i += 4) {
     var r = d[i], g = d[i+1], b = d[i+2];
     var lum = 0.299 * r + 0.587 * g + 0.114 * b;
-    // Base desaturation: keep 85% of chroma, blend 15% toward neutral gray
-    var factor = 0.85;
-    // Extra compression for hues most out-of-gamut in CMYK
+    // Base desaturation: keep 78% of chroma, blend 22% toward neutral gray
+    var factor = 0.78;
+    // Hue-dependent extra compression for out-of-gamut CMYK regions
     var mx = Math.max(r, g, b), mn = Math.min(r, g, b);
     var sat = mx === 0 ? 0 : (mx - mn) / mx;
-    if (sat > 0.3) {
-      if (b > r && b > g) factor *= 0.85;       // vivid blues → most loss
-      else if (g > r && g > b) factor *= 0.90;   // vivid greens → moderate loss
+    if (sat > 0.25) {
+      if (b > r && b > g) factor *= 0.80;             // vivid blues → biggest loss
+      else if (g > r && g > b) factor *= 0.85;         // vivid greens → big loss
+      else if (r > g && r > b && g > b) factor *= 0.92; // oranges → moderate loss
+      else if (r > g && r > b && b > g) factor *= 0.90; // magentas/pinks → moderate loss
     }
-    d[i]   = Math.max(0, Math.min(255, Math.round(lum + factor * (r - lum))));
-    d[i+1] = Math.max(0, Math.min(255, Math.round(lum + factor * (g - lum))));
-    d[i+2] = Math.max(0, Math.min(255, Math.round(lum + factor * (b - lum))));
+    // Desaturate toward luminance
+    var rr = lum + factor * (r - lum);
+    var gg = lum + factor * (g - lum);
+    var bb = lum + factor * (b - lum);
+    // Screen-to-paper brightness rolloff: pull highlights down ~5%,
+    // shadows barely touched (keeps dark areas from going to mud)
+    var dimFactor = 0.95 + 0.05 * (1 - lum / 255); // 0.95 at white → 1.0 at black
+    d[i]   = Math.max(0, Math.min(255, Math.round(rr * dimFactor)));
+    d[i+1] = Math.max(0, Math.min(255, Math.round(gg * dimFactor)));
+    d[i+2] = Math.max(0, Math.min(255, Math.round(bb * dimFactor)));
   }
   ctx.putImageData(imgData, 0, 0);
 }
