@@ -459,7 +459,7 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
     <div class="form-row">
       <div class="form-group">
         <label>Finishing</label>
-        <input type="text" id="finishing_notes" placeholder="e.g. Trim to size, UV coat, laminate">
+        <input type="text" id="finishing_notes" placeholder="e.g. Trim to size, UV coat, grommets">
       </div>
     </div>
     <div class="form-row">
@@ -1495,9 +1495,11 @@ function findTrimBox(uint8Array) {
     }
   }
 
-  // Scan the ENTIRE file — TrimBox entries can be anywhere in the PDF,
-  // especially in multipage files where page dictionaries are spread throughout.
-  scanRange(0, uint8Array.length);
+  var searchLen = Math.min(uint8Array.length, 3 * 1024 * 1024);
+  scanRange(0, searchLen);
+  if (uint8Array.length > searchLen) {
+    scanRange(uint8Array.length - 1024 * 1024, uint8Array.length);
+  }
   return results;
 }
 
@@ -1598,22 +1600,8 @@ function applyCMYKSimulation(canvas) {
   ctx.putImageData(imgData, 0, 0);
 }
 
-// Cache ArrayBuffers per File to avoid re-reading large files for every page
-var _fileBufferCache = new WeakMap();
-function getFileBuffer(file) {
-  if (_fileBufferCache.has(file)) {
-    return Promise.resolve(_fileBufferCache.get(file));
-  }
-  return file.arrayBuffer().then(function(buf) {
-    _fileBufferCache.set(file, buf);
-    return buf;
-  });
-}
-
 function renderPdfPageToImage(file, pageNum) {
-  return getFileBuffer(file).then(function(cachedBuf) {
-    // Copy the buffer so PDF.js can't detach the cached version
-    var arrayBuf = cachedBuf.slice(0);
+  return file.arrayBuffer().then(function(arrayBuf) {
     var rawBytes = new Uint8Array(arrayBuf);
     var allTrimBoxes = findTrimBox(rawBytes);
     var spotColors = findSpotColors(rawBytes);
@@ -1622,43 +1610,21 @@ function renderPdfPageToImage(file, pageNum) {
         var vp = page.getViewport({ scale: 1.0 });
         var widthIn = vp.width / 72;
         var heightIn = vp.height / 72;
-        var pageRotation = page.rotate || 0; // 0, 90, 180, 270
         // Pick the TrimBox that fits inside this page's MediaBox (closest match)
-        // TrimBox raw bytes are UNROTATED — if the page has /Rotate 90 or 270,
-        // the viewport swaps width/height but TrimBox coordinates don't.
         var trimBox = null;
-        function tbFitsPage(tb) {
-          // Try normal orientation
-          if (tb.widthIn <= widthIn + 0.1 && tb.heightIn <= heightIn + 0.1) return true;
-          // Try swapped (rotated page)
-          if (tb.heightIn <= widthIn + 0.1 && tb.widthIn <= heightIn + 0.1) return true;
-          return false;
-        }
-        function tbDiff(tb) {
-          var d1 = Math.abs(tb.widthIn - widthIn) + Math.abs(tb.heightIn - heightIn);
-          var d2 = Math.abs(tb.heightIn - widthIn) + Math.abs(tb.widthIn - heightIn);
-          return Math.min(d1, d2);
-        }
         if (allTrimBoxes.length === 1) {
           // Single TrimBox — only use it if it fits this page
           var tb = allTrimBoxes[0];
-          if (tbFitsPage(tb)) trimBox = tb;
+          if (tb.widthIn <= widthIn + 0.1 && tb.heightIn <= heightIn + 0.1) trimBox = tb;
         } else if (allTrimBoxes.length > 1) {
           // Multiple TrimBoxes — find the one whose dimensions best fit this page
           var bestDiff = Infinity;
           allTrimBoxes.forEach(function(tb) {
-            if (tbFitsPage(tb)) {
-              var diff = tbDiff(tb);
+            if (tb.widthIn <= widthIn + 0.1 && tb.heightIn <= heightIn + 0.1) {
+              var diff = Math.abs(tb.widthIn - widthIn) + Math.abs(tb.heightIn - heightIn);
               if (diff < bestDiff) { bestDiff = diff; trimBox = tb; }
             }
           });
-        }
-        // If page is rotated 90/270, swap the TrimBox dimensions to match viewport orientation
-        if (trimBox && (pageRotation === 90 || pageRotation === 270)) {
-          trimBox = {
-            x1: trimBox.y1, y1: trimBox.x1, x2: trimBox.y2, y2: trimBox.x2,
-            widthIn: trimBox.heightIn, heightIn: trimBox.widthIn
-          };
         }
         var longestIn = Math.max(widthIn, heightIn);
         var dpi = longestIn > 70 ? 110 : 150;
@@ -2260,43 +2226,26 @@ function collectAllResolutions(pagePlan, scale) {
       // PDF: use PDF.js operator list to find embedded image dimensions
       // (raw byte scanning fails on compressed object streams)
       promises.push(
-        getFileBuffer(item.file).then(function(cachedBuf) {
-          var buf = cachedBuf.slice(0);
+        item.file.arrayBuffer().then(function(buf) {
           var uint8 = new Uint8Array(buf);
           return pdfjsLib.getDocument({ data: buf }).promise.then(function(pdf) {
             return pdf.getPage(item.pageNum).then(function(page) {
               var vp = page.getViewport({ scale: 1.0 });
               var pageW = vp.width / 72;
               var pageH = vp.height / 72;
-              var pgRot = page.rotate || 0;
               // Check TrimBox for actual print size — pick best match for this page
               var allTB = findTrimBox(uint8);
               var trimBox = null;
-              function _tbFits(tb) {
-                if (tb.widthIn <= pageW + 0.1 && tb.heightIn <= pageH + 0.1) return true;
-                if (tb.heightIn <= pageW + 0.1 && tb.widthIn <= pageH + 0.1) return true;
-                return false;
-              }
-              function _tbDiff(tb) {
-                var d1 = Math.abs(tb.widthIn - pageW) + Math.abs(tb.heightIn - pageH);
-                var d2 = Math.abs(tb.heightIn - pageW) + Math.abs(tb.widthIn - pageH);
-                return Math.min(d1, d2);
-              }
-              if (allTB.length === 1 && _tbFits(allTB[0])) {
+              if (allTB.length === 1 && allTB[0].widthIn <= pageW + 0.1 && allTB[0].heightIn <= pageH + 0.1) {
                 trimBox = allTB[0];
               } else if (allTB.length > 1) {
                 var bestDiff = Infinity;
                 allTB.forEach(function(tb) {
-                  if (_tbFits(tb)) {
-                    var diff = _tbDiff(tb);
+                  if (tb.widthIn <= pageW + 0.1 && tb.heightIn <= pageH + 0.1) {
+                    var diff = Math.abs(tb.widthIn - pageW) + Math.abs(tb.heightIn - pageH);
                     if (diff < bestDiff) { bestDiff = diff; trimBox = tb; }
                   }
                 });
-              }
-              // Swap TrimBox dims for rotated pages so they match viewport orientation
-              if (trimBox && (pgRot === 90 || pgRot === 270)) {
-                trimBox = { widthIn: trimBox.heightIn, heightIn: trimBox.widthIn,
-                            x1: trimBox.y1, y1: trimBox.x1, x2: trimBox.y2, y2: trimBox.x2 };
               }
               if (trimBox) {
                 pageW = trimBox.widthIn;
@@ -2421,10 +2370,6 @@ window.generateProof = function() {
   }
 
   function processPages() {
-    console.log('[Proofmaker] pagePlan built: ' + pagePlan.length + ' pages from ' + allFiles.length + ' file entries');
-    pagePlan.forEach(function(p, i) {
-      console.log('[Proofmaker]   page ' + (i+1) + ': ' + p.filename + ' pg' + p.pageNum + '/' + p.totalPages + ' (' + p.type + ')');
-    });
     if (pagePlan.length === 0) {
       alert('No valid pages found.');
       progressOverlay.classList.remove('active');
@@ -2567,15 +2512,11 @@ window.generateProof = function() {
 
     function renderNextSheet() {
       if (sheetIdx >= sheetPlan.length) {
-        console.log('[Proofmaker] All ' + sheetPlan.length + ' sheets rendered successfully');
         finishPdf();
         return;
       }
 
       var sheet = sheetPlan[sheetIdx];
-      console.log('[Proofmaker] Rendering sheet ' + (sheetIdx+1) + '/' + sheetPlan.length +
-        ': front=' + sheet.front.filename + ' pg' + sheet.front.pageNum +
-        (sheet.back ? ', back=' + sheet.back.filename + ' pg' + sheet.back.pageNum : ', single-sided'));
       var pct = Math.round((sheetIdx / totalSheets) * 100);
       progressBar.style.width = pct + '%';
       progressDetail.textContent = 'Sheet ' + (sheetIdx+1) + ' of ' + totalSheets + ': ' + sheet.front.filename;
