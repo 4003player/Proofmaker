@@ -52,7 +52,14 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
 .file-item {
   padding: 8px 12px; display: flex; align-items: center;
   background: #f9f9f9; border-radius: 8px; margin-bottom: 4px; font-size: 13px;
+  cursor: default; transition: background 0.15s, box-shadow 0.15s;
 }
+.file-item.drag-over { background: #e0f0ff; box-shadow: 0 0 0 2px #0071e3; }
+.file-item .drag-handle {
+  cursor: grab; margin-right: 8px; color: #bbb; font-size: 15px;
+  user-select: none; -webkit-user-select: none; line-height: 1;
+}
+.file-item .drag-handle:active { cursor: grabbing; }
 .file-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-item .info { color: #86868b; font-size: 11px; margin-left: 8px; white-space: nowrap; }
 .file-item .remove {
@@ -289,6 +296,52 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
 .res-btn-bypass:hover { background: #dcdce0; }
 .res-btn-continue { background: #0071e3; color: #fff; }
 .res-btn-continue:hover { background: #0077ed; }
+
+/* Spot color classification modal */
+.spot-modal-overlay {
+  display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+  z-index: 10001; justify-content: center; align-items: center;
+}
+.spot-modal-overlay.active { display: flex; }
+.spot-modal-box {
+  background: #fff; border-radius: 16px; padding: 28px 32px;
+  max-width: 520px; width: 92%; box-shadow: 0 8px 40px rgba(0,0,0,0.25);
+}
+.spot-modal-box h3 { font-size: 17px; font-weight: 700; margin-bottom: 4px; color: #1d1d1f; }
+.spot-modal-box .spot-subtitle { font-size: 13px; color: #86868b; margin-bottom: 16px; }
+.spot-list { margin-bottom: 16px; }
+.spot-list-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border-bottom: 1px solid #f0f0f0;
+}
+.spot-list-item:last-child { border-bottom: none; }
+.spot-swatch {
+  width: 22px; height: 22px; border-radius: 4px; flex-shrink: 0;
+  border: 1px solid #d2d2d7;
+}
+.spot-swatch.white-plate {
+  background: repeating-conic-gradient(#e8e8ed 0% 25%, #fff 0% 50%) 50% / 10px 10px;
+}
+.spot-name { flex: 1; font-size: 14px; font-weight: 500; color: #1d1d1f; }
+.spot-classify-select {
+  padding: 6px 10px; border: 1px solid #d2d2d7; border-radius: 8px;
+  font-size: 13px; font-family: inherit; background: #fafafa; cursor: pointer;
+}
+.spot-classify-select:focus { outline: none; border-color: #0071e3; box-shadow: 0 0 0 3px rgba(0,113,227,0.15); }
+.spot-actions { display: flex; gap: 10px; justify-content: flex-end; }
+.spot-actions button {
+  padding: 10px 22px; border: none; border-radius: 10px;
+  font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s;
+}
+.spot-btn-ok { background: #0071e3; color: #fff; }
+.spot-btn-ok:hover { background: #0077ed; }
+
+/* White plate thumbnail on proof */
+.white-plate-thumb {
+  position: absolute; bottom: 8px; left: 8px;
+  border: 1px solid #d2d2d7; border-radius: 4px; background: #fff;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.12);
+}
 </style>
 </head>
 <body>
@@ -303,6 +356,18 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
       <button class="res-btn-stop" id="res-stop">✕ Stop</button>
       <button class="res-btn-bypass" id="res-bypass">Bypass</button>
       <button class="res-btn-continue" id="res-continue">Continue ▸</button>
+    </div>
+  </div>
+</div>
+
+<!-- Spot color classification modal -->
+<div class="spot-modal-overlay" id="spot-modal">
+  <div class="spot-modal-box">
+    <h3>🎨 Spot Colors Detected</h3>
+    <div class="spot-subtitle">Classify each spot color so the proof renders correctly:</div>
+    <div class="spot-list" id="spot-list"></div>
+    <div class="spot-actions">
+      <button class="spot-btn-ok" id="spot-ok">Continue ▸</button>
     </div>
   </div>
 </div>
@@ -557,7 +622,7 @@ var dblSameHint = document.getElementById('dbl-same-hint');
 
 function updateDblSameVisibility() {
   var pt = printTypeInput.value.toLowerCase();
-  var isDouble = ['4/4','1/1','2/2','6/6','double'].some(function(x) { return pt.indexOf(x) >= 0; });
+  var isDouble = /\b[1-9]\/[1-9]\b/.test(pt) || pt.indexOf('double') >= 0;
   dblSameRow.style.display = isDouble ? 'flex' : 'none';
   if (!isDouble) dblSameToggle.checked = false;
 }
@@ -1209,6 +1274,8 @@ function renderFileList() {
   allFiles.forEach(function(entry, i) {
     var li = document.createElement('li');
     li.className = 'file-item';
+    li.draggable = true;
+    li.setAttribute('data-idx', i);
     var sizeMB = (entry.file.size / (1024*1024)).toFixed(1);
     var badge = entry.type === 'raster'
       ? '<span class="badge badge-img">' + entry.rasterMeta.format + '</span>'
@@ -1219,13 +1286,36 @@ function renderFileList() {
     }
     var infoText = sizeMB + ' MB';
     if (entry.type === 'raster') {
-      infoText = entry.rasterMeta.trimW.toFixed(1) + '" × ' + entry.rasterMeta.trimH.toFixed(1) + '" · ' + entry.rasterMeta.dpi + ' DPI';
+      infoText = entry.rasterMeta.trimW.toFixed(1) + '" \u00d7 ' + entry.rasterMeta.trimH.toFixed(1) + '" \u00b7 ' + entry.rasterMeta.dpi + ' DPI';
     }
     var savedQty = entry.perQty || '';
-    li.innerHTML = '<span class="name">' + displayName + badge + '</span>' +
+    li.innerHTML = '<span class="drag-handle" title="Drag to reorder">\u2261</span>' +
+      '<span class="name">' + displayName + badge + '</span>' +
       '<span class="info">' + infoText + '</span>' +
       '<input type="text" class="qty-input" placeholder="Qty" value="' + savedQty + '" data-file-idx="' + i + '" onchange="window._setFileQty(' + i + ', this.value)" oninput="window._setFileQty(' + i + ', this.value)">' +
-      '<button class="remove" onclick="window._removeFile(' + i + ')">✕</button>';
+      '<button class="remove" onclick="window._removeFile(' + i + ')">&#10005;</button>';
+
+    // Drag-and-drop reordering
+    li.addEventListener('dragstart', function(ev) {
+      ev.dataTransfer.effectAllowed = 'move';
+      ev.dataTransfer.setData('text/plain', i.toString());
+      li.style.opacity = '0.4';
+    });
+    li.addEventListener('dragend', function() { li.style.opacity = '1'; });
+    li.addEventListener('dragover', function(ev) { ev.preventDefault(); ev.dataTransfer.dropEffect = 'move'; li.classList.add('drag-over'); });
+    li.addEventListener('dragleave', function() { li.classList.remove('drag-over'); });
+    li.addEventListener('drop', function(ev) {
+      ev.preventDefault();
+      li.classList.remove('drag-over');
+      var fromIdx = parseInt(ev.dataTransfer.getData('text/plain'), 10);
+      var toIdx = parseInt(li.getAttribute('data-idx'), 10);
+      if (fromIdx !== toIdx && !isNaN(fromIdx) && !isNaN(toIdx)) {
+        var moved = allFiles.splice(fromIdx, 1)[0];
+        allFiles.splice(toIdx, 0, moved);
+        renderFileList();
+      }
+    });
+
     fileItems.appendChild(li);
   });
   fileList.style.display = 'block';
@@ -1265,12 +1355,24 @@ var SPOT_COLOR_MAP = {
   'bleed': { color: '#FF6600', label: 'Bleed' }
 };
 
+// Convert CMYK 0-1 values to hex RGB color string
+function cmykToHex(c, m, y, k) {
+  var r = Math.round(255 * (1 - c) * (1 - k));
+  var g = Math.round(255 * (1 - m) * (1 - k));
+  var b = Math.round(255 * (1 - y) * (1 - k));
+  return '#' + ('0'+r.toString(16)).slice(-2) + ('0'+g.toString(16)).slice(-2) + ('0'+b.toString(16)).slice(-2);
+}
+
 function findSpotColors(uint8Array) {
   // Search raw PDF bytes for /Separation /Name entries (spot color definitions)
-  // Pattern: /Separation /<Name> or /Separation (<Name>)
+  // Catches ALL spot colors — known finishing names AND unknown PMS/custom spots.
+  // Also parses the tint function C1 values to compute an approximate swatch color.
   var sep = [0x2F,0x53,0x65,0x70,0x61,0x72,0x61,0x74,0x69,0x6F,0x6E]; // "/Separation"
   var found = [];
   var searchLen = Math.min(uint8Array.length, 5 * 1024 * 1024); // first 5MB
+
+  // Names to skip entirely (registration, process channels, internal)
+  var skipNames = { 'all': true, 'none': true, 'cyan': true, 'magenta': true, 'yellow': true, 'black': true };
 
   function searchRange(start, end) {
     for (var i = start; i < end - 80; i++) {
@@ -1279,14 +1381,12 @@ function findSpotColors(uint8Array) {
         if (uint8Array[i + j] !== sep[j]) { hit = false; break; }
       }
       if (!hit) continue;
-      // Read up to 120 bytes after "/Separation"
+      // Read up to 300 bytes after "/Separation" to capture name + tint function
       var chunk = '';
-      for (var k = i + sep.length; k < Math.min(i + sep.length + 120, uint8Array.length); k++) {
+      for (var k = i + sep.length; k < Math.min(i + sep.length + 300, uint8Array.length); k++) {
         chunk += String.fromCharCode(uint8Array[k]);
       }
       // Match /Name or (Name) after optional whitespace.
-      // PDF names can contain #XX hex-encoded chars (e.g. /Die#20Line = "Die Line")
-      // so the regex must allow # and hex digits inside the name token.
       var m = chunk.match(/\s*\/?([A-Za-z_][\w#]*?)(?:\s|\/|\[|\])/) ||
               chunk.match(/\s*\(([^)]+)\)/);
       if (m) {
@@ -1296,15 +1396,62 @@ function findSpotColors(uint8Array) {
         }).trim();
         // Normalize: lowercase, strip spaces/underscores for matching
         var key = rawName.toLowerCase().replace(/[\s_-]/g, '');
-        if (SPOT_COLOR_MAP[key] && !found.some(function(f) { return f.key === key; })) {
+        // Skip process colors and registration
+        if (skipNames[key]) { i += sep.length; continue; }
+        // Deduplicate
+        if (found.some(function(f) { return f.key === key; })) { i += sep.length; continue; }
+
+        // Parse tint function C1 values for swatch color
+        // Look for /C1[n n n n] (CMYK) or /C1[n n n] (RGB) or /C1[n] (Gray)
+        var tintColor = null;
+        var c1m = chunk.match(/\/C1\s*\[\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s*\]/);
+        if (c1m) {
+          // CMYK C1 values
+          tintColor = cmykToHex(parseFloat(c1m[1]), parseFloat(c1m[2]), parseFloat(c1m[3]), parseFloat(c1m[4]));
+        } else {
+          var c1rgb = chunk.match(/\/C1\s*\[\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s*\]/);
+          if (c1rgb) {
+            var rr = Math.round(parseFloat(c1rgb[1]) * 255);
+            var gg = Math.round(parseFloat(c1rgb[2]) * 255);
+            var bb = Math.round(parseFloat(c1rgb[3]) * 255);
+            tintColor = '#' + ('0'+rr.toString(16)).slice(-2) + ('0'+gg.toString(16)).slice(-2) + ('0'+bb.toString(16)).slice(-2);
+          }
+        }
+
+        // Check if it's a known finishing spot
+        if (SPOT_COLOR_MAP[key]) {
           found.push({
             key: key,
             name: SPOT_COLOR_MAP[key].label,
             color: SPOT_COLOR_MAP[key].color,
-            rawName: rawName
+            rawName: rawName,
+            type: 'finishing',
+            tintColor: tintColor
+          });
+        } else {
+          // Unknown spot — could be PMS, White, Varnish, custom, etc.
+          // Detect likely white plates: OPW, White, SpotWhite, etc.
+          var isLikelyWhite = /^(opw|white|spotwhite|whiteink|opaque\s*white|opw\s*\d*)$/i.test(rawName.replace(/[\s_-]/g, ''));
+          // Use tint color for swatch, fall back to a neutral gray for unknowns
+          var swatchColor = tintColor || '#888888';
+          // If tint is invisible (C1 all zeros = white plate), mark it
+          var tintIsInvisible = tintColor === '#ffffff' || tintColor === '#000000' && !c1m;
+          if (isLikelyWhite || (c1m && parseFloat(c1m[1]) === 0 && parseFloat(c1m[2]) === 0 && parseFloat(c1m[3]) === 0 && parseFloat(c1m[4]) === 0)) {
+            isLikelyWhite = true;
+          }
+
+          found.push({
+            key: key,
+            name: rawName,
+            color: swatchColor,
+            rawName: rawName,
+            type: isLikelyWhite ? 'white' : 'unknown',
+            tintColor: tintColor,
+            needsClassification: true
           });
         }
       }
+      i += sep.length;
     }
   }
 
@@ -1313,6 +1460,50 @@ function findSpotColors(uint8Array) {
   if (uint8Array.length > searchLen) {
     searchRange(uint8Array.length - 1024 * 1024, uint8Array.length);
   }
+
+  // Also scan for /DeviceN arrays that reference spot channels
+  // to catch spots that only appear via DeviceN (like OPW in some files)
+  var dnBytes = [0x2F,0x44,0x65,0x76,0x69,0x63,0x65,0x4E]; // "/DeviceN"
+  function searchDeviceN(start, end) {
+    for (var i = start; i < end - 80; i++) {
+      var hit = true;
+      for (var j = 0; j < dnBytes.length; j++) {
+        if (uint8Array[i + j] !== dnBytes[j]) { hit = false; break; }
+      }
+      if (!hit) continue;
+      var chunk = '';
+      for (var k = i + dnBytes.length; k < Math.min(i + dnBytes.length + 200, uint8Array.length); k++) {
+        chunk += String.fromCharCode(uint8Array[k]);
+      }
+      // Extract names from the array: /DeviceN[/Name1 /Name2 ...]
+      var arrM = chunk.match(/\s*\[\s*((?:\/[A-Za-z_][\w#]*\s*)+)\]/);
+      if (arrM) {
+        var names = arrM[1].match(/\/([A-Za-z_][\w#]*)/g);
+        if (names) {
+          names.forEach(function(n) {
+            var rawName = n.substring(1).replace(/#([0-9A-Fa-f]{2})/g, function(_, hex) {
+              return String.fromCharCode(parseInt(hex, 16));
+            });
+            var key = rawName.toLowerCase().replace(/[\s_-]/g, '');
+            if (skipNames[key]) return;
+            if (found.some(function(f) { return f.key === key; })) return;
+            var isLikelyWhite = /^(opw|white|spotwhite|whiteink|opaque\s*white|opw\s*\d*)$/i.test(rawName.replace(/[\s_-]/g, ''));
+            found.push({
+              key: key, name: rawName, color: isLikelyWhite ? '#888888' : '#888888',
+              rawName: rawName, type: isLikelyWhite ? 'white' : 'unknown',
+              tintColor: null, needsClassification: true
+            });
+          });
+        }
+      }
+      i += dnBytes.length;
+    }
+  }
+  searchDeviceN(0, searchLen);
+  if (uint8Array.length > searchLen) {
+    searchDeviceN(uint8Array.length - 1024 * 1024, uint8Array.length);
+  }
+
   return found;
 }
 
@@ -1565,15 +1756,455 @@ function detectCropMarksVisual(canvas) {
   return { leftPx: left, topPx: top, rightPx: right, bottomPx: bottom };
 }
 
+// ── Spot color classification modal ──
+// Shows a modal when unknown/unclassified spot colors are detected.
+// Returns a promise that resolves with the updated spot colors array.
+// The modal is only shown ONCE per proof generation — first file's spots
+// are classified and the choices are reused for all subsequent files.
+var _spotClassificationCache = {};
+
+function showSpotColorClassification(spotColors) {
+  // Filter to spots that need classification and haven't been cached
+  var needsClassify = spotColors.filter(function(sc) {
+    if (_spotClassificationCache[sc.key] !== undefined) {
+      // Apply cached classification
+      var cached = _spotClassificationCache[sc.key];
+      sc.type = cached.type;
+      sc.needsClassification = false;
+      if (cached.type === 'die') {
+        sc.color = SPOT_COLOR_MAP['die'] ? SPOT_COLOR_MAP['die'].color : '#FF00FF';
+      } else if (cached.type === 'score') {
+        sc.color = SPOT_COLOR_MAP['score'] ? SPOT_COLOR_MAP['score'].color : '#00FF00';
+      } else if (cached.type === 'ignore') {
+        sc._ignore = true;
+      }
+      return false;
+    }
+    return sc.needsClassification;
+  });
+
+  if (needsClassify.length === 0) {
+    // Filter out ignored spots
+    return Promise.resolve(spotColors.filter(function(sc) { return !sc._ignore; }));
+  }
+
+  return new Promise(function(resolve) {
+    var modal = document.getElementById('spot-modal');
+    var list = document.getElementById('spot-list');
+    list.innerHTML = '';
+
+    needsClassify.forEach(function(sc) {
+      var item = document.createElement('div');
+      item.className = 'spot-list-item';
+
+      // Swatch
+      var swatch = document.createElement('div');
+      swatch.className = 'spot-swatch';
+      if (sc.type === 'white' || (sc.tintColor && sc.tintColor === '#ffffff')) {
+        swatch.className += ' white-plate';
+      } else {
+        swatch.style.background = sc.color;
+      }
+
+      // Name
+      var name = document.createElement('div');
+      name.className = 'spot-name';
+      name.textContent = sc.rawName;
+
+      // Classification dropdown
+      var sel = document.createElement('select');
+      sel.className = 'spot-classify-select';
+      sel.setAttribute('data-spot-key', sc.key);
+      var options = [
+        { value: 'spot', label: 'Spot Plate' },
+        { value: 'white', label: 'White' },
+        { value: 'die', label: 'Die Line' },
+        { value: 'score', label: 'Score / Crease' },
+        { value: 'ignore', label: 'Ignore' }
+      ];
+      options.forEach(function(opt) {
+        var o = document.createElement('option');
+        o.value = opt.value;
+        o.textContent = opt.label;
+        sel.appendChild(o);
+      });
+      // Pre-select based on auto-detection
+      if (sc.type === 'white') sel.value = 'white';
+      else sel.value = 'spot';
+
+      item.appendChild(swatch);
+      item.appendChild(name);
+      item.appendChild(sel);
+      list.appendChild(item);
+    });
+
+    modal.classList.add('active');
+
+    document.getElementById('spot-ok').onclick = function() {
+      modal.classList.remove('active');
+
+      // Apply classifications
+      var selects = list.querySelectorAll('.spot-classify-select');
+      selects.forEach(function(sel) {
+        var key = sel.getAttribute('data-spot-key');
+        var val = sel.value;
+        // Cache for subsequent files
+        _spotClassificationCache[key] = { type: val };
+
+        // Update the spot in the array
+        spotColors.forEach(function(sc) {
+          if (sc.key === key) {
+            sc.type = val;
+            sc.needsClassification = false;
+            if (val === 'die') {
+              sc.color = SPOT_COLOR_MAP['die'] ? SPOT_COLOR_MAP['die'].color : '#FF00FF';
+              sc.name = sc.rawName + ' (Die)';
+            } else if (val === 'score') {
+              sc.color = SPOT_COLOR_MAP['score'] ? SPOT_COLOR_MAP['score'].color : '#00FF00';
+              sc.name = sc.rawName + ' (Score)';
+            } else if (val === 'ignore') {
+              sc._ignore = true;
+            } else if (val === 'white') {
+              sc.type = 'white';
+            }
+          }
+        });
+      });
+
+      // Filter out ignored spots
+      resolve(spotColors.filter(function(sc) { return !sc._ignore; }));
+    };
+  });
+}
+
 // ── CMYK gamut simulation ──
 // Desaturates + dims canvas pixels to approximate CMYK print output.
 // Backlit screens are brighter than ink-on-paper; this bridges the gap.
+
+// ── White plate thumbnail extraction (composite approach) ──
+// Finds ALL OPW images in the PDF, parses their placement CTMs from the
+// content stream, and composites them onto a single canvas at the correct
+// positions. This handles the common case where a full-card binary base plate
+// and a detailed gradient artwork overlay are stacked as separate images.
+function extractWhitePlateThumb(uint8Array, spotColors, pageWidthPt, pageHeightPt) {
+  var whiteSpot = null;
+  for (var i = 0; i < spotColors.length; i++) {
+    if (spotColors[i].type === 'white') { whiteSpot = spotColors[i]; break; }
+  }
+  if (!whiteSpot) return Promise.resolve(null);
+
+  var text = new TextDecoder('latin1').decode(uint8Array);
+  var spotName = whiteSpot.rawName;
+
+  // ── Step 1: Find all image XObjects and their properties ──
+  var imageObjs = {}; // objNum -> { w, h, len, streamStart, isFlate, cs, smask }
+  var objRe = /(\d+)\s+0\s+obj\s*<</g;
+  var gm;
+  while ((gm = objRe.exec(text)) !== null) {
+    var objNum = parseInt(gm[1], 10);
+    var objChunk = text.substring(gm.index, Math.min(gm.index + 600, text.length));
+    if (!/\/Subtype\s*\/?\s*Image/.test(objChunk)) continue;
+
+    var wm = objChunk.match(/\/Width\s*(\d+)/);
+    var hm = objChunk.match(/\/Height\s*(\d+)/);
+    var lm = objChunk.match(/\/Length\s*(\d+)/);
+    if (!wm || !hm || !lm) continue;
+
+    var csMatch = objChunk.match(/\/ColorSpace\s*\/?\s*(\w+)/);
+    var csRef = objChunk.match(/\/ColorSpace\s+(\d+)\s+\d+\s+R/);
+    var smaskMatch = objChunk.match(/\/SMask\s+(\d+)\s+\d+\s+R/);
+
+    var streamIdx = text.indexOf('stream', gm.index + 10);
+    if (streamIdx < 0 || streamIdx > gm.index + 1000) continue;
+    var ss = streamIdx + 6;
+    if (uint8Array[ss] === 0x0D) ss++;
+    if (uint8Array[ss] === 0x0A) ss++;
+
+    imageObjs[objNum] = {
+      w: parseInt(wm[1], 10), h: parseInt(hm[1], 10),
+      len: parseInt(lm[1], 10), streamStart: ss,
+      isFlate: /\/Filter\s*\/?\s*FlateDecode/.test(objChunk),
+      csName: csMatch ? csMatch[1] : null,
+      csRef: csRef ? parseInt(csRef[1], 10) : null,
+      smask: smaskMatch ? parseInt(smaskMatch[1], 10) : null
+    };
+  }
+
+  // ── Step 2: Find the DeviceN[/OPW] colorspace object number ──
+  var dnPattern = new RegExp('/DeviceN\\s*\\[\\s*/' + spotName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*\\]', 'g');
+  var dnMatch = dnPattern.exec(text);
+  if (!dnMatch) {
+    console.warn('White plate: DeviceN[/' + spotName + '] not found');
+    return Promise.resolve(null);
+  }
+  var dnPos = dnMatch.index;
+  var preChunk = text.substring(Math.max(0, dnPos - 200), dnPos);
+  var objMatch = preChunk.match(/(\d+)\s+0\s+obj[^]*$/);
+  var dnObjNum = objMatch ? parseInt(objMatch[1], 10) : -1;
+
+  // ── Step 3: Find images that use this DeviceN colorspace ──
+  var opwImages = []; // images using the OPW colorspace
+  Object.keys(imageObjs).forEach(function(k) {
+    var img = imageObjs[parseInt(k, 10)];
+    if (img.csRef === dnObjNum || img.csName === spotName) {
+      opwImages.push({ objNum: parseInt(k, 10), img: img });
+    }
+  });
+
+  // ── Step 4: Parse XObject resource dict to map names to obj numbers ──
+  var xobjMap = {}; // name -> objNum
+  var xobjDictMatch = text.match(/\/XObject\s*<<([^>]+)>>/);
+  if (xobjDictMatch) {
+    var xobjEntries = xobjDictMatch[1].match(/\/(\w+)\s+(\d+)\s+\d+\s+R/g);
+    if (xobjEntries) {
+      xobjEntries.forEach(function(e) {
+        var m2 = e.match(/\/(\w+)\s+(\d+)/);
+        if (m2) xobjMap[m2[1]] = parseInt(m2[2], 10);
+      });
+    }
+  }
+  var objToName = {};
+  Object.keys(xobjMap).forEach(function(name) { objToName[xobjMap[name]] = name; });
+
+  // ── Step 5: Parse content stream for CTM placements ──
+  // Find and decompress the content stream
+  var placements = []; // { objNum, cm[6] }
+  // Find the page's /Contents reference
+  var contentsMatch = text.match(/\/Contents\s+(\d+)\s+\d+\s+R/);
+  if (contentsMatch) {
+    var contObj = parseInt(contentsMatch[1], 10);
+    var contStart = text.indexOf(contObj + ' 0 obj');
+    if (contStart >= 0) {
+      var contChunk = text.substring(contStart, contStart + 500);
+      var contLen = parseInt((contChunk.match(/\/Length\s*(\d+)/) || [])[1] || '0', 10);
+      var contStreamIdx = text.indexOf('stream', contStart + 10);
+      if (contStreamIdx >= 0 && contLen > 0) {
+        var css = contStreamIdx + 6;
+        if (uint8Array[css] === 0x0D) css++;
+        if (uint8Array[css] === 0x0A) css++;
+        var contCompressed = uint8Array.slice(css, css + contLen);
+        try {
+          var contRaw;
+          // Sync inflate using DecompressionStream isn't possible, so use a manual approach
+          // Actually we need async — wrap the rest in a promise chain
+        } catch(e) {}
+      }
+    }
+  }
+
+  // Since content stream decompression needs async, restructure as promise
+  function decompressStream(start, len) {
+    var comp = uint8Array.slice(start, start + len);
+    if (typeof DecompressionStream !== 'undefined') {
+      return new Response(
+        new Blob([comp]).stream().pipeThrough(new DecompressionStream('deflate'))
+      ).arrayBuffer().then(function(buf) { return new Uint8Array(buf); });
+    }
+    return Promise.resolve(comp);
+  }
+
+  // Decompress the content stream to find placements
+  var contentStreamPromise;
+  if (contentsMatch) {
+    var contObj2 = parseInt(contentsMatch[1], 10);
+    var contStart2 = text.indexOf(contObj2 + ' 0 obj');
+    var contChunk2 = text.substring(contStart2, contStart2 + 500);
+    var contLen2 = parseInt((contChunk2.match(/\/Length\s*(\d+)/) || [])[1] || '0', 10);
+    var contStreamIdx2 = text.indexOf('stream', contStart2 + 10);
+    var css2 = contStreamIdx2 + 6;
+    if (uint8Array[css2] === 0x0D) css2++;
+    if (uint8Array[css2] === 0x0A) css2++;
+
+    contentStreamPromise = decompressStream(css2, contLen2).then(function(csBytes) {
+      var csText = new TextDecoder('latin1').decode(csBytes);
+      // Parse CTM (cm) commands followed by image Do commands
+      var lastCm = null;
+      var lines = csText.split(/\r?\n|\r/);
+      for (var li = 0; li < lines.length; li++) {
+        var line = lines[li].trim();
+        if (line.endsWith(' cm')) {
+          var parts = line.replace(' cm', '').trim().split(/\s+/);
+          if (parts.length === 6) {
+            lastCm = parts.map(function(p) { return parseFloat(p); });
+          }
+        } else if (line.indexOf(' Do') >= 0 || line.indexOf('/') === 0 && line.endsWith('Do')) {
+          var doName = line.replace(/\s*Do\s*$/, '').replace(/^\//, '').trim();
+          var doObj = xobjMap[doName];
+          if (doObj && lastCm) {
+            placements.push({ objNum: doObj, cm: lastCm.slice() });
+          }
+        }
+      }
+    });
+  } else {
+    contentStreamPromise = Promise.resolve();
+  }
+
+  return contentStreamPromise.then(function() {
+    // ── Step 6: Find SMask images for each OPW image ──
+    // SMasks contain the actual grayscale data
+    var layers = []; // { smaskObj, cm, w, h }
+
+    opwImages.forEach(function(oi) {
+      var img = oi.img;
+      if (!img.smask) return;
+      var smaskImg = imageObjs[img.smask];
+      if (!smaskImg) return;
+
+      // Find the CTM placement for this OPW image
+      var placement = null;
+      for (var pi = 0; pi < placements.length; pi++) {
+        if (placements[pi].objNum === oi.objNum) {
+          placement = placements[pi]; break;
+        }
+      }
+
+      layers.push({
+        smaskObjNum: img.smask,
+        smask: smaskImg,
+        cm: placement ? placement.cm : null,
+        opwObjNum: oi.objNum
+      });
+    });
+
+    // Also check for DeviceGray images that are SMasks of OPW images
+    // but weren't found via the OPW image path (fallback)
+    if (layers.length === 0) {
+      // Fallback: find DeviceGray images near the DeviceN definition
+      Object.keys(imageObjs).forEach(function(k) {
+        var objNum = parseInt(k, 10);
+        var img = imageObjs[objNum];
+        if (img.csName === 'DeviceGray' && img.w >= 50 && img.h >= 50) {
+          if (!/\/ImageMask\s+true/.test(text.substring(text.indexOf(objNum + ' 0 obj'), text.indexOf(objNum + ' 0 obj') + 400))) {
+            layers.push({ smaskObjNum: objNum, smask: img, cm: null, opwObjNum: null });
+          }
+        }
+      });
+    }
+
+    if (layers.length === 0) {
+      console.warn('White plate: no OPW layers found');
+      return null;
+    }
+
+    console.log('White plate: found', layers.length, 'OPW layers to composite');
+
+    // ── Step 7: Decompress all SMask images ──
+    var decompPromises = layers.map(function(layer) {
+      return decompressStream(layer.smask.streamStart, layer.smask.len).then(function(raw) {
+        var expected = layer.smask.w * layer.smask.h;
+        if (raw.length < expected && raw.length >= Math.ceil(expected / 2)) {
+          // 4-bit packed
+          var unpacked = new Uint8Array(expected);
+          for (var i = 0; i < raw.length; i++) {
+            var hi = (raw[i] >> 4) & 0x0F;
+            var lo = raw[i] & 0x0F;
+            var idx = i * 2;
+            if (idx < expected) unpacked[idx] = hi * 17;
+            if (idx + 1 < expected) unpacked[idx + 1] = lo * 17;
+          }
+          raw = unpacked;
+        }
+        layer.pixels = raw;
+        layer.pixelCount = expected;
+      });
+    });
+
+    return Promise.all(decompPromises).then(function() {
+      // ── Step 8: Composite all layers onto one canvas ──
+      // Use page dimensions as the coordinate space
+      var thumbMax = 400;
+      var pageW = pageWidthPt || 2048;
+      var pageH = pageHeightPt || 2952;
+      var scale = Math.min(1, thumbMax / Math.max(pageW, pageH));
+      var tw = Math.round(pageW * scale);
+      var th = Math.round(pageH * scale);
+
+      var canvas = document.createElement('canvas');
+      canvas.width = tw;
+      canvas.height = th;
+      var ctx = canvas.getContext('2d');
+      // Start with white background (no ink)
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, tw, th);
+
+      // Sort layers: base (larger) first, detail overlays on top
+      layers.sort(function(a, b) {
+        return (b.smask.w * b.smask.h) - (a.smask.w * a.smask.h);
+      });
+
+      layers.forEach(function(layer) {
+        if (!layer.pixels || layer.pixels.length < layer.smask.w * layer.smask.h) return;
+
+        // Render this layer's pixels to a temp canvas
+        var lw = layer.smask.w, lh = layer.smask.h;
+        var tempCanvas = document.createElement('canvas');
+        tempCanvas.width = lw;
+        tempCanvas.height = lh;
+        var tctx = tempCanvas.getContext('2d');
+        var imgData = tctx.createImageData(lw, lh);
+        var d = imgData.data;
+
+        for (var y = 0; y < lh; y++) {
+          for (var x = 0; x < lw; x++) {
+            var si = y * lw + x;
+            var di = (y * lw + x) * 4;
+            // Invert: 255 (white ink 100%) → 0 (black), 0 (no ink) → 255 (white)
+            var val = 255 - layer.pixels[si];
+            d[di] = val; d[di+1] = val; d[di+2] = val; d[di+3] = 255;
+          }
+        }
+        tctx.putImageData(imgData, 0, 0);
+
+        // Compute destination rect on the composite canvas
+        if (layer.cm) {
+          // CTM: [scaleX, 0, 0, scaleY, translateX, translateY] (PDF coords, bottom-left origin)
+          var cm = layer.cm;
+          var srcWPt = cm[0]; // width in points
+          var srcHPt = cm[3]; // height in points
+          var srcXPt = cm[4]; // x from left in points
+          var srcYPt = cm[5]; // y from bottom in points
+
+          // Convert to top-left origin canvas coords
+          var dx = (srcXPt / pageW) * tw;
+          var dy = ((pageH - srcYPt - srcHPt) / pageH) * th;
+          var dw = (srcWPt / pageW) * tw;
+          var dh = (srcHPt / pageH) * th;
+
+          // Clamp to canvas bounds (bleed extends past page)
+          if (dx < 0) { dw += dx; dx = 0; }
+          if (dy < 0) { dh += dy; dy = 0; }
+          dw = Math.min(dw, tw - dx);
+          dh = Math.min(dh, th - dy);
+
+          ctx.drawImage(tempCanvas, 0, 0, lw, lh, dx, dy, dw, dh);
+        } else {
+          // No CTM — draw full-frame
+          ctx.drawImage(tempCanvas, 0, 0, lw, lh, 0, 0, tw, th);
+        }
+      });
+
+      return {
+        dataUrl: canvas.toDataURL('image/jpeg', 0.85),
+        width: tw,
+        height: th,
+        spotName: whiteSpot.rawName
+      };
+    });
+  }).catch(function(e) {
+    console.warn('White plate extraction failed:', e);
+    return null;
+  });
+}
+
 function applyCMYKSimulation(canvas) {
   var ctx = canvas.getContext('2d');
   var imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   var d = imgData.data;
   for (var i = 0; i < d.length; i += 4) {
     var r = d[i], g = d[i+1], b = d[i+2];
+    // Skip near-whites — preserve paper/substrate color
+    if (r > 230 && g > 230 && b > 230) continue;
     var lum = 0.299 * r + 0.587 * g + 0.114 * b;
     // Base desaturation: keep 78% of chroma, blend 22% toward neutral gray
     var factor = 0.78;
@@ -1605,6 +2236,8 @@ function renderPdfPageToImage(file, pageNum) {
     var rawBytes = new Uint8Array(arrayBuf);
     var allTrimBoxes = findTrimBox(rawBytes);
     var spotColors = findSpotColors(rawBytes);
+    // PDF.js detaches the ArrayBuffer — keep a copy for white plate extraction
+    var rawBytesCopy = new Uint8Array(rawBytes);
     return pdfjsLib.getDocument({ data: arrayBuf }).promise.then(function(pdf) {
       return pdf.getPage(pageNum).then(function(page) {
         var vp = page.getViewport({ scale: 1.0 });
@@ -1758,7 +2391,7 @@ function renderPdfPageToImage(file, pageNum) {
           var imgDataUrl = finalCanvas.toDataURL('image/jpeg', 0.82);
           var totalPages = pdf.numPages;
           pdf.destroy();
-          return { imgDataUrl: imgDataUrl, widthIn: widthIn, heightIn: heightIn, imgPixW: finalCanvas.width, imgPixH: finalCanvas.height, hasWhiteEdges: hasWhiteEdges, totalPages: totalPages, trimBox: trimBox, spotColors: spotColors, dieLineBox: dieLineBox };
+          return { imgDataUrl: imgDataUrl, widthIn: widthIn, heightIn: heightIn, imgPixW: finalCanvas.width, imgPixH: finalCanvas.height, hasWhiteEdges: hasWhiteEdges, totalPages: totalPages, trimBox: trimBox, spotColors: spotColors, dieLineBox: dieLineBox, _rawBytes: rawBytesCopy };
         });
       });
     });
@@ -1767,7 +2400,20 @@ function renderPdfPageToImage(file, pageNum) {
 
 // ── Draw one proof page onto jsPDF ──
 function drawProofPage(doc, frontImg, opts) {
-  var PW = 11, PH = 8.5;
+  // Determine layout based on white plates and double-sided
+  var hasWhitePlateFront = frontImg.whitePlateThumb != null;
+  var backImg = opts.backImg || null;
+  var hasWhitePlateBack = backImg && backImg.whitePlateThumb != null;
+  // Count total panels needed
+  var panelCount = 1; // front always
+  if (backImg) panelCount++; // back
+  if (hasWhitePlateFront) panelCount++; // front white plate
+  if (hasWhitePlateBack && !opts.sameArt) panelCount++; // back white plate (not if same art)
+
+  // Page width: 11" for 1-2 panels, 14" for 3 panels, 17" for 4 panels
+  var useWide = panelCount >= 3;
+  var PW = panelCount >= 4 ? 17 : (panelCount >= 3 ? 14 : 11);
+  var PH = 8.5;
   var M = 0.5;
   var usableW = PW - 2*M;
   var usableH = PH - 2*M;
@@ -1887,8 +2533,11 @@ function drawProofPage(doc, frontImg, opts) {
   // Checkboxes
   y += 0.05;
   var pt = (opts.printType || '').toLowerCase();
-  var isSingle = ['4/0','1/0','2/0','6/0','single'].some(function(x) { return pt.indexOf(x) >= 0; });
-  var isDouble = ['4/4','1/1','2/2','6/6','double'].some(function(x) { return pt.indexOf(x) >= 0; });
+  // Auto-detect single/double-sided from print type
+  // Double-sided: any N/M where both N and M are non-zero (4/4, 5/4, 4/1, etc.)
+  // Single-sided: any N/0 pattern (4/0, 1/0, etc.)
+  var isSingle = /\b[1-9]\/0\b/.test(pt) || pt.indexOf('single') >= 0;
+  var isDouble = /\b[1-9]\/[1-9]\b/.test(pt) || pt.indexOf('double') >= 0;
 
   doc.setLineWidth(0.01);
   doc.setDrawColor(BLACK);
@@ -1925,9 +2574,102 @@ function drawProofPage(doc, frontImg, opts) {
   // ── Artwork Section ──
   // ══════════════════════════════════════════════════
   var dimM = 0.35;
-  var backImg = opts.backImg || null;
 
-  if (backImg) {
+  if (useWide && backImg) {
+    // ── MULTI-PANEL LAYOUT (white plate(s) + front + back) ──
+    // Build ordered panel list: WP paired next to its source image
+    // Layout order: [WP_FRONT] FRONT [WP_BACK] BACK
+    var panels = [];
+    if (hasWhitePlateFront) {
+      panels.push({ type: 'wp', dataUrl: frontImg.whitePlateThumb.dataUrl, label: 'WHITE PLATE', spotName: frontImg.whitePlateThumb.spotName, filename: '' });
+    }
+    panels.push({ type: 'front', dataUrl: frontImg.imgDataUrl, label: 'FRONT', hasWhiteEdges: frontImg.hasWhiteEdges, filename: opts.filename || '' });
+    if (hasWhitePlateBack && !opts.sameArt) {
+      panels.push({ type: 'wp', dataUrl: backImg.whitePlateThumb.dataUrl, label: 'WHITE PLATE', spotName: backImg.whitePlateThumb.spotName, filename: '' });
+    }
+    panels.push({ type: 'back', dataUrl: backImg.imgDataUrl, label: 'BACK', hasWhiteEdges: backImg.hasWhiteEdges, filename: opts.backFilename || '' });
+
+    var gap = 0.15;
+    var numPanels = panels.length;
+    var singleSlotW = (artW - dimM - gap * (numPanels - 1)) / numPanels;
+    var availH_multi = artH - dimM - 0.55;
+    var imgAspect = (frontImg.imgPixW || frontImg.widthIn) / (frontImg.imgPixH || frontImg.heightIn);
+
+    var drawW = singleSlotW;
+    var drawH = drawW / imgAspect;
+    if (drawH > availH_multi) { drawH = availH_multi; drawW = drawH * imgAspect; }
+
+    var artY_top = M + dimM + 0.1;
+    var centerY = artY_top + (availH_multi - drawH) / 2;
+    var startX = M + dimM;
+
+    for (var pi = 0; pi < panels.length; pi++) {
+      var panel = panels[pi];
+      var panelX = startX + pi * (drawW + gap);
+
+      // Draw the image
+      try {
+        doc.addImage(panel.dataUrl, 'JPEG', panelX, centerY, drawW, drawH);
+      } catch(e) { console.warn('Panel draw failed:', e); }
+
+      // Border
+      if (panel.type === 'wp') {
+        doc.setDrawColor('#cccccc'); doc.setLineWidth(0.005);
+        doc.rect(panelX, centerY, drawW, drawH);
+        // White plate legend
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(6.5);
+        doc.setTextColor(BLACK);
+        doc.text('\u25a0 = White Ink (' + panel.spotName + ')', panelX, centerY - 0.06);
+      } else if (panel.hasWhiteEdges) {
+        doc.setDrawColor(ACCENT); doc.setLineWidth(0.007);
+        doc.rect(panelX, centerY, drawW, drawH);
+      }
+
+      // Panel label
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(8);
+      doc.setTextColor(GRAY);
+      doc.text(panel.label, panelX + drawW/2, centerY + drawH + 0.16, { align: 'center' });
+
+      // Filename
+      if (panel.filename) {
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(7);
+        doc.setTextColor(BLACK);
+        doc.text(panel.filename, panelX, centerY + drawH + 0.28);
+      }
+    }
+
+    // Dimension arrows — on last non-WP panel (front or back)
+    var lastArtPanel = panels.length - 1;
+    var lastPanelX = startX + lastArtPanel * (drawW + gap);
+    doc.setDrawColor(BLACK); doc.setLineWidth(0.007);
+    var arrLen = 0.05;
+
+    // Horizontal (above last panel)
+    var dimYT = centerY - 0.14;
+    doc.line(lastPanelX, dimYT, lastPanelX + drawW, dimYT);
+    doc.line(lastPanelX, dimYT, lastPanelX + arrLen, dimYT - arrLen/2);
+    doc.line(lastPanelX, dimYT, lastPanelX + arrLen, dimYT + arrLen/2);
+    doc.line(lastPanelX + drawW, dimYT, lastPanelX + drawW - arrLen, dimYT - arrLen/2);
+    doc.line(lastPanelX + drawW, dimYT, lastPanelX + drawW - arrLen, dimYT + arrLen/2);
+    doc.line(lastPanelX, dimYT - 0.08, lastPanelX, dimYT + 0.08);
+    doc.line(lastPanelX + drawW, dimYT - 0.08, lastPanelX + drawW, dimYT + 0.08);
+    doc.setFontSize(8); doc.setTextColor(BLACK);
+    doc.text(fmtDim(actualW), lastPanelX + drawW/2, dimYT - 0.06, { align: 'center' });
+
+    // Vertical (right of last panel)
+    var dimXR = lastPanelX + drawW + 0.14;
+    doc.line(dimXR, centerY, dimXR, centerY + drawH);
+    doc.line(dimXR, centerY, dimXR - arrLen/2, centerY + arrLen);
+    doc.line(dimXR, centerY, dimXR + arrLen/2, centerY + arrLen);
+    doc.line(dimXR, centerY + drawH, dimXR - arrLen/2, centerY + drawH - arrLen);
+    doc.line(dimXR, centerY + drawH, dimXR + arrLen/2, centerY + drawH - arrLen);
+    doc.line(dimXR - 0.08, centerY, dimXR + 0.08, centerY);
+    doc.line(dimXR - 0.08, centerY + drawH, dimXR + 0.08, centerY + drawH);
+    doc.saveGraphicsState();
+    doc.text(fmtDim(actualH), dimXR + 0.12, centerY + drawH/2, { angle: 90, align: 'center' });
+    doc.restoreGraphicsState();
+
+  } else if (backImg) {
     // ── DUAL IMAGE LAYOUT (4/4 front + back) ──
     var gap = 0.2;
     var singleSlotW = (artW - dimM - gap) / 2;
@@ -2065,27 +2807,43 @@ function drawProofPage(doc, frontImg, opts) {
 
   if (spots.length > 0) {
     // Draw a legend swatch for each detected spot color
-    // Die/cut spots get a FILLED square in their color; non-die spots get outline only
     var dieKeys = ['cutcontour','thrucut','die','dieline','diecut','trim','cutter','cut'];
     var xCursor = legendX;
     for (var si = 0; si < spots.length; si++) {
-      var isDieSpot = dieKeys.indexOf(spots[si].key) >= 0;
+      var sp = spots[si];
+      // Skip white plates in legend — they get the thumbnail instead
+      if (sp.type === 'white') continue;
+      var isDieSpot = dieKeys.indexOf(sp.key) >= 0 || sp.type === 'die';
+      var isScore = sp.type === 'score' || ['score','crease','fold'].indexOf(sp.key) >= 0;
       if (isDieSpot) {
         // Filled square for die/cut line spots
-        doc.setFillColor(spots[si].color);
+        doc.setFillColor(sp.color);
         doc.rect(xCursor, legendY, 0.12, 0.12, 'F');
-      } else {
-        // Outline square for finishing spots (score, perf, fold, etc.)
-        doc.setDrawColor(spots[si].color);
+      } else if (isScore) {
+        // Dashed outline for score/crease
+        doc.setDrawColor(sp.color);
         doc.setLineWidth(0.014);
         doc.rect(xCursor, legendY, 0.12, 0.12);
+      } else {
+        // Filled swatch with tint color for spot plates / PMS colors
+        doc.setFillColor(sp.tintColor || sp.color);
+        doc.rect(xCursor, legendY, 0.12, 0.12, 'F');
       }
       doc.setFont('helvetica', 'normal'); doc.setFontSize(7);
       doc.setTextColor(GRAY);
-      doc.text(spots[si].name, xCursor + 0.16, legendY + 0.1);
+      doc.text(sp.name, xCursor + 0.16, legendY + 0.1);
       // Measure text width and advance cursor
-      var labelW = doc.getTextWidth(spots[si].name);
+      var labelW = doc.getTextWidth(sp.name);
       xCursor += 0.16 + labelW + 0.2;
+    }
+    // If only white spots were present (all skipped), show default legend
+    if (xCursor === legendX) {
+      doc.setDrawColor(ACCENT);
+      doc.setLineWidth(0.014);
+      doc.rect(legendX, legendY, 0.12, 0.12);
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(7);
+      doc.setTextColor(GRAY);
+      doc.text('Cut Line', legendX + 0.16, legendY + 0.1);
     }
   } else {
     // No spot colors detected — show default cyan cut line legend
@@ -2106,6 +2864,32 @@ function drawProofPage(doc, frontImg, opts) {
     doc.setFont('helvetica', 'normal'); doc.setFontSize(7);
     doc.setTextColor(GRAY);
     doc.text('\u2702 Trim detected from PDF', PW/2, legendY + 0.1, { align: 'center' });
+  }
+
+  // ── White plate thumbnail (small, bottom-left — only for single-sided with white plate) ──
+  if (frontImg.whitePlateThumb && !useWide) {
+    var wpt = frontImg.whitePlateThumb;
+    // Draw in bottom-left corner above the legend, sized ~1.2" max
+    var thumbMaxIn = 1.2;
+    var thumbAspect = wpt.width / wpt.height;
+    var thumbW = thumbMaxIn;
+    var thumbH = thumbW / thumbAspect;
+    if (thumbH > thumbMaxIn) { thumbH = thumbMaxIn; thumbW = thumbH * thumbAspect; }
+    var thumbX = M + 0.05;
+    var thumbY = legendY - thumbH - 0.15;
+    // Background + border
+    doc.setFillColor('#ffffff');
+    doc.setDrawColor('#cccccc');
+    doc.setLineWidth(0.005);
+    doc.rect(thumbX - 0.03, thumbY - 0.15, thumbW + 0.06, thumbH + 0.23, 'FD');
+    // Label
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(6);
+    doc.setTextColor('#666666');
+    doc.text('\u25a0 = White Ink (' + wpt.spotName + ')', thumbX, thumbY - 0.04);
+    // Thumbnail image
+    try {
+      doc.addImage(wpt.dataUrl, 'JPEG', thumbX, thumbY, thumbW, thumbH);
+    } catch(e) { console.warn('White plate thumb failed:', e); }
   }
 
   // ── Page label ──
@@ -2311,6 +3095,8 @@ function collectAllResolutions(pagePlan, scale) {
 
 // ── Main generate function ──
 window.generateProof = function() {
+  // Reset spot color classification cache for this generation run
+  _spotClassificationCache = {};
   var clientName = document.getElementById('client_name').value.trim();
   if (!clientName) { alert('Please enter a client name.'); return; }
   if (allFiles.length === 0) { alert('Please drop at least one file.'); return; }
@@ -2422,7 +3208,7 @@ window.generateProof = function() {
 
     // Detect double-sided from print type
     var pt = printType.toLowerCase();
-    var isDoubleSided = ['4/4','1/1','2/2','6/6','double'].some(function(x) { return pt.indexOf(x) >= 0; });
+    var isDoubleSided = /\b[1-9]\/[1-9]\b/.test(pt) || pt.indexOf('double') >= 0;
     var dblSame = document.getElementById('dbl_same_toggle').checked;
 
     // Odd page count warning for double-sided (not same-art)
@@ -2462,7 +3248,7 @@ window.generateProof = function() {
     function doBuildSheets(resNote, hideRes) {
 
     var pt = printType.toLowerCase();
-    var isDoubleSided = ['4/4','1/1','2/2','6/6','double'].some(function(x) { return pt.indexOf(x) >= 0; });
+    var isDoubleSided = /\b[1-9]\/[1-9]\b/.test(pt) || pt.indexOf('double') >= 0;
     var dblSame = document.getElementById('dbl_same_toggle').checked;
 
     // Build sheet plan — pair consecutive pages for double-sided jobs
@@ -2488,7 +3274,7 @@ window.generateProof = function() {
     var totalSheets = sheetPlan.length;
     progressStatus.textContent = 'Generating ' + totalSheets + ' proof sheet' + (totalSheets > 1 ? 's' : '') + '\u2026';
 
-    var doc = new jsPDF({ orientation: 'landscape', unit: 'in', format: 'letter' });
+    var doc = new jsPDF({ orientation: 'landscape', unit: 'in', format: [8.5, 17] });
     var sheetIdx = 0;
 
     // Helper: get image data for a page plan item (PDF or raster)
@@ -2506,7 +3292,33 @@ window.generateProof = function() {
           rasterInfo: { dpi: rm.dpi, pixW: rm.pixW, pixH: rm.pixH, bleed: rm.bleed }
         });
       } else {
-        return renderPdfPageToImage(item.file, item.pageNum);
+        return renderPdfPageToImage(item.file, item.pageNum).then(function(result) {
+          // If there are unclassified spot colors, show the classification modal
+          var classifyPromise;
+          if (result.spotColors && result.spotColors.some(function(sc) { return sc.needsClassification; })) {
+            // Pause progress overlay while showing modal
+            progressOverlay.classList.remove('active');
+            classifyPromise = showSpotColorClassification(result.spotColors).then(function(classified) {
+              progressOverlay.classList.add('active');
+              result.spotColors = classified;
+            });
+          } else {
+            classifyPromise = Promise.resolve();
+          }
+
+          return classifyPromise.then(function() {
+            // Extract white plate thumbnail if a white spot was classified
+            if (result._rawBytes && result.spotColors && result.spotColors.some(function(sc) { return sc.type === 'white'; })) {
+              return extractWhitePlateThumb(result._rawBytes, result.spotColors, result.widthIn * 72, result.heightIn * 72).then(function(thumb) {
+                result.whitePlateThumb = thumb;
+                delete result._rawBytes; // free memory
+                return result;
+              });
+            }
+            delete result._rawBytes;
+            return result;
+          });
+        });
       }
     }
 
@@ -2521,7 +3333,7 @@ window.generateProof = function() {
       progressBar.style.width = pct + '%';
       progressDetail.textContent = 'Sheet ' + (sheetIdx+1) + ' of ' + totalSheets + ': ' + sheet.front.filename;
 
-      if (sheetIdx > 0) doc.addPage('letter', 'landscape');
+      if (sheetIdx > 0) doc.addPage([8.5, 17], 'landscape');
 
       // Render front page
       getPageImage(sheet.front).then(function(frontImg) {
@@ -2544,6 +3356,7 @@ window.generateProof = function() {
             filename: sheet.front.filename, pageLabel: pageLabel, branded: branded,
             backImg: backImg,
             backFilename: sheet.back ? sheet.back.filename : '',
+            sameArt: sheet.sameArt || false,
             resNote: resNote,
             hideResolution: hideRes
           });
