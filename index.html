@@ -2263,17 +2263,23 @@ function renderPdfPageToImage(file, pageNum) {
         var longestIn = Math.max(widthIn, heightIn);
         var dpi = longestIn > 70 ? 110 : 150;
         var maxPixels = 40000000;
-        var scale = dpi / 72;
+        var targetScale = dpi / 72;
         // Ensure at least 2400px on longest side for proof quality
         // (critical for scaled-down vector files that are physically small)
         var minProofPx = 2400;
-        var currentLongPx = Math.max(vp.width, vp.height) * scale;
+        var currentLongPx = Math.max(vp.width, vp.height) * targetScale;
         if (currentLongPx < minProofPx) {
-          scale = minProofPx / Math.max(vp.width, vp.height);
+          targetScale = minProofPx / Math.max(vp.width, vp.height);
         }
-        while (vp.width * scale * vp.height * scale > maxPixels && scale > 0.5) {
-          scale *= 0.7;
+        while (vp.width * targetScale * vp.height * targetScale > maxPixels && targetScale > 0.5) {
+          targetScale *= 0.7;
         }
+        // PDF.js 3.x has a scale-dependent bug with SMask + luminosity
+        // shadings (gradient overlays shift at higher scales). Cap the
+        // actual render scale and upscale the canvas afterwards to reach
+        // the target pixel count safely.
+        var safeMaxScale = 0.5;
+        var scale = Math.min(targetScale, safeMaxScale);
         var renderVp = page.getViewport({ scale: scale });
         var canvas = document.createElement('canvas');
         canvas.width = renderVp.width;
@@ -2285,6 +2291,19 @@ function renderPdfPageToImage(file, pageNum) {
         ]).then(function(renderResults) {
           var opList = renderResults[1];
           var dieLineBox = detectDieLineFromOpList(opList, spotColors, vp);
+
+          // Upscale to target pixel count if we rendered at a capped scale
+          if (scale < targetScale) {
+            var targetW = Math.round(vp.width * targetScale);
+            var targetH = Math.round(vp.height * targetScale);
+            var upCanvas = document.createElement('canvas');
+            upCanvas.width = targetW;
+            upCanvas.height = targetH;
+            upCanvas.getContext('2d').drawImage(canvas, 0, 0, targetW, targetH);
+            canvas = upCanvas;
+            ctx = canvas.getContext('2d');
+          }
+
           // Detect white edges
           var imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
           var dd = imgData.data;
