@@ -2210,7 +2210,8 @@ function extractWhitePlateThumb(uint8Array, spotColors, pageWidthPt, pageHeightP
         dataUrl: canvas.toDataURL('image/jpeg', 0.85),
         width: tw,
         height: th,
-        spotName: whiteSpot.rawName
+        spotName: whiteSpot.rawName,
+        tintColor: whiteSpot.tintColor || null
       };
     });
   }).catch(function(e) {
@@ -2258,6 +2259,15 @@ function renderPdfPageToImage(file, pageNum) {
     var rawBytes = new Uint8Array(arrayBuf);
     var allTrimBoxes = findTrimBox(rawBytes);
     var spotColors = findSpotColors(rawBytes);
+    // Quick scan for /Luminosity + /ShadingType — PDF.js 3.x has a
+    // scale-dependent bug specifically with luminosity soft masks combined
+    // with gradient shadings (the overlay shifts at render scales above ~0.5).
+    // Plain /SMask refs (alpha masks, placed images) are unaffected.
+    var hasLuminosityShading = false;
+    var rawStr = new TextDecoder('latin1').decode(rawBytes);
+    if (rawStr.indexOf('/Luminosity') !== -1 && rawStr.indexOf('/ShadingType') !== -1) {
+      hasLuminosityShading = true;
+    }
     // PDF.js detaches the ArrayBuffer — keep a copy for white plate extraction
     var rawBytesCopy = new Uint8Array(rawBytes);
     return pdfjsLib.getDocument({ data: arrayBuf }).promise.then(function(pdf) {
@@ -2296,11 +2306,10 @@ function renderPdfPageToImage(file, pageNum) {
           targetScale *= 0.7;
         }
         // PDF.js 3.x has a scale-dependent bug with SMask + luminosity
-        // shadings (gradient overlays shift at higher scales). Cap the
-        // actual render scale and upscale the canvas afterwards to reach
-        // the target pixel count safely.
-        var safeMaxScale = 0.5;
-        var scale = Math.min(targetScale, safeMaxScale);
+        // shadings (gradient overlays shift at higher render scales).
+        // Cap the render scale when SMasks are present and upscale the
+        // canvas afterward. Regular vector PDFs render at full scale.
+        var scale = hasLuminosityShading ? Math.min(targetScale, 0.5) : targetScale;
         var renderVp = page.getViewport({ scale: scale });
         var canvas = document.createElement('canvas');
         canvas.width = renderVp.width;
@@ -2625,11 +2634,11 @@ function drawProofPage(doc, frontImg, opts) {
     // Layout order: [WP_FRONT] FRONT [WP_BACK] BACK
     var panels = [];
     if (hasWhitePlateFront) {
-      panels.push({ type: 'wp', dataUrl: frontImg.whitePlateThumb.dataUrl, label: 'WHITE PLATE', spotName: frontImg.whitePlateThumb.spotName, filename: '' });
+      panels.push({ type: 'wp', dataUrl: frontImg.whitePlateThumb.dataUrl, label: 'WHITE PLATE', spotName: frontImg.whitePlateThumb.spotName, tintColor: frontImg.whitePlateThumb.tintColor, filename: '' });
     }
     panels.push({ type: 'front', dataUrl: frontImg.imgDataUrl, label: 'FRONT', hasWhiteEdges: frontImg.hasWhiteEdges, filename: opts.filename || '' });
     if (hasWhitePlateBack && !opts.sameArt) {
-      panels.push({ type: 'wp', dataUrl: backImg.whitePlateThumb.dataUrl, label: 'WHITE PLATE', spotName: backImg.whitePlateThumb.spotName, filename: '' });
+      panels.push({ type: 'wp', dataUrl: backImg.whitePlateThumb.dataUrl, label: 'WHITE PLATE', spotName: backImg.whitePlateThumb.spotName, tintColor: backImg.whitePlateThumb.tintColor, filename: '' });
     }
     panels.push({ type: 'back', dataUrl: backImg.imgDataUrl, label: 'BACK', hasWhiteEdges: backImg.hasWhiteEdges, filename: opts.backFilename || '' });
 
@@ -2932,11 +2941,19 @@ function drawProofPage(doc, frontImg, opts) {
     var xCursor = legendX;
     for (var si = 0; si < spots.length; si++) {
       var sp = spots[si];
-      // Skip white plates in legend — they get the thumbnail instead
-      if (sp.type === 'white') continue;
+      // White plates get a swatch too — using their tintColor or 50% cyan default
       var isDieSpot = dieKeys.indexOf(sp.key) >= 0 || sp.type === 'die';
       var isScore = sp.type === 'score' || ['score','crease','fold'].indexOf(sp.key) >= 0;
-      if (isDieSpot) {
+      var isWhite = sp.type === 'white';
+      if (isWhite) {
+        // White plate swatch — use file's tint color, fall back to 50% cyan
+        var wpSwatchColor = sp.tintColor || '#00BFFF';
+        if (wpSwatchColor === '#ffffff' || wpSwatchColor === '#000000') wpSwatchColor = '#00BFFF';
+        doc.setFillColor(wpSwatchColor);
+        doc.rect(xCursor, legendY, 0.12, 0.12, 'F');
+        doc.setDrawColor('#999999'); doc.setLineWidth(0.003);
+        doc.rect(xCursor, legendY, 0.12, 0.12);
+      } else if (isDieSpot) {
         // Filled square for die/cut line spots
         doc.setFillColor(sp.color);
         doc.rect(xCursor, legendY, 0.12, 0.12, 'F');
