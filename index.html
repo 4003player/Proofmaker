@@ -9,6 +9,7 @@
 <!-- PDF.js (legacy build - works without ES modules) -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
 
 <!-- jsPDF for generating the proof PDF -->
 <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
@@ -385,6 +386,26 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
     <div class="modal-actions">
       <button class="modal-cancel" id="odd-cancel">✕ Cancel</button>
       <button class="modal-ok" id="odd-continue">Continue ▸</button>
+    </div>
+  </div>
+</div>
+
+<!-- OPW backside pairing modal -->
+<div class="spot-modal-overlay" id="opw-back-modal">
+  <div class="spot-modal-box">
+    <h3>🎴 OPW White Plate Detected</h3>
+    <div class="spot-subtitle">These files contain OPW white ink plates. For double-sided proofing, upload a backside file to pair with each OPW card.</div>
+    <div style="margin:16px 0;">
+      <div id="opw-back-drop" style="border:2px dashed #d2d2d7;border-radius:12px;padding:28px 16px;text-align:center;cursor:pointer;transition:border-color .2s,background .2s;" onclick="document.getElementById('opw-back-input').click()">
+        <div style="font-size:28px;margin-bottom:6px;">📄</div>
+        <div style="font-size:14px;color:#666;">Click or drop a backside file here</div>
+        <div id="opw-back-filename" style="font-size:13px;color:#0071e3;margin-top:8px;display:none;"></div>
+      </div>
+      <input type="file" id="opw-back-input" accept=".pdf,.ai,.tif,.tiff,.jpg,.jpeg,.png" style="display:none;">
+    </div>
+    <div class="spot-actions">
+      <button class="spot-btn-ok" id="opw-back-skip" style="background:#e8e8ed;color:#1d1d1f;">Skip (single-sided)</button>
+      <button class="spot-btn-ok" id="opw-back-continue" disabled>Continue ▸</button>
     </div>
   </div>
 </div>
@@ -1206,17 +1227,39 @@ function addAcceptedFiles(fileArray) {
   // Expand multipage PDFs into per-page entries
   var pdfPromises = pdfs.map(function(f) {
     return f.arrayBuffer().then(function(buf) {
-      return pdfjsLib.getDocument({ data: buf }).promise.then(function(pdf) {
+      var rawBytes = new Uint8Array(buf);
+      var hasOpw = false;
+      try {
+        var spots = findSpotColors(rawBytes);
+        for (var si = 0; si < spots.length; si++) {
+          // Only trigger OPW workflow for strictly "OPW" named spots, not generic white inks
+          if (spots[si].type === 'white' && /^opw(\d*)$/i.test(spots[si].rawName.replace(/[\s_-]/g, ''))) {
+            hasOpw = true; break;
+          }
+        }
+      } catch(e) { console.warn('Spot color scan failed:', e); }
+      // Copy buffer before PDF.js detaches it
+      var bufCopy = buf.slice ? buf.slice(0) : new ArrayBuffer(buf.byteLength);
+      if (!buf.slice) new Uint8Array(bufCopy).set(new Uint8Array(buf));
+      return pdfjsLib.getDocument({ data: bufCopy }).promise.then(function(pdf) {
         var n = pdf.numPages;
         for (var p = 1; p <= n; p++) {
-          allFiles.push({ file: f, type: 'pdf', pdfPageNum: p, pdfTotalPages: n });
+          allFiles.push({ file: f, type: 'pdf', pdfPageNum: p, pdfTotalPages: n, hasOpw: hasOpw });
         }
         pdf.destroy();
+        return hasOpw;
       });
+    }).catch(function(e) {
+      // If a single PDF fails, don't block the rest — just add it without OPW
+      console.warn('PDF scan error for ' + f.name + ':', e);
+      allFiles.push({ file: f, type: 'pdf', pdfPageNum: 1, pdfTotalPages: 1, hasOpw: false });
+      return false;
     });
   });
-  Promise.all(pdfPromises).then(function() {
+  Promise.all(pdfPromises).then(function(results) {
+    var anyOpw = results.some(function(r) { return r; });
     renderFileList();
+    if (anyOpw) { showOpwBackModal(); }
   }).catch(function(e) {
     console.error('Error reading PDFs:', e);
     renderFileList();
@@ -1237,6 +1280,99 @@ function processNextRaster() {
     processNextRaster();
   });
 }
+
+// ── OPW Backside pairing modal ──
+var _opwBackFile = null;
+
+function showOpwBackModal() {
+  _opwBackFile = null;
+  var modal = document.getElementById('opw-back-modal');
+  var fnDiv = document.getElementById('opw-back-filename');
+  var contBtn = document.getElementById('opw-back-continue');
+  var inp = document.getElementById('opw-back-input');
+  fnDiv.style.display = 'none';
+  fnDiv.textContent = '';
+  contBtn.disabled = true;
+  inp.value = '';
+  modal.classList.add('active');
+}
+
+(function() {
+  var modal = document.getElementById('opw-back-modal');
+  var inp = document.getElementById('opw-back-input');
+  var fnDiv = document.getElementById('opw-back-filename');
+  var contBtn = document.getElementById('opw-back-continue');
+  var skipBtn = document.getElementById('opw-back-skip');
+  var dropArea = document.getElementById('opw-back-drop');
+
+  function handleBackFile(file) {
+    if (!file) return;
+    _opwBackFile = file;
+    fnDiv.textContent = '✓ ' + file.name;
+    fnDiv.style.display = 'block';
+    contBtn.disabled = false;
+  }
+
+  inp.addEventListener('change', function() { if (inp.files.length) handleBackFile(inp.files[0]); });
+
+  ['dragenter','dragover'].forEach(function(e) {
+    dropArea.addEventListener(e, function(ev) { ev.preventDefault(); ev.stopPropagation(); dropArea.style.borderColor = '#0071e3'; dropArea.style.background = 'rgba(0,113,227,0.04)'; });
+  });
+  ['dragleave','drop'].forEach(function(e) {
+    dropArea.addEventListener(e, function(ev) { ev.preventDefault(); ev.stopPropagation(); dropArea.style.borderColor = '#d2d2d7'; dropArea.style.background = ''; });
+  });
+  dropArea.addEventListener('drop', function(ev) {
+    if (ev.dataTransfer.files.length) handleBackFile(ev.dataTransfer.files[0]);
+  });
+
+  skipBtn.addEventListener('click', function() {
+    modal.classList.remove('active');
+    _opwBackFile = null;
+  });
+
+  contBtn.addEventListener('click', function() {
+    modal.classList.remove('active');
+    if (!_opwBackFile) return;
+    var backFile = _opwBackFile;
+    _opwBackFile = null;
+
+    function doInterleave(backEntry) {
+      var newFiles = [];
+      for (var i = 0; i < allFiles.length; i++) {
+        newFiles.push(allFiles[i]);
+        if (allFiles[i].hasOpw) {
+          // Clone backEntry so each insertion is independent
+          var clone = {};
+          for (var k in backEntry) { if (backEntry.hasOwnProperty(k)) clone[k] = backEntry[k]; }
+          newFiles.push(clone);
+        }
+      }
+      allFiles.length = 0;
+      for (var j = 0; j < newFiles.length; j++) allFiles.push(newFiles[j]);
+      renderFileList();
+    }
+
+    if (isPdfFile(backFile.name)) {
+      // PDF back — expand pages (use page 1)
+      backFile.arrayBuffer().then(function(buf) {
+        return pdfjsLib.getDocument({ data: buf }).promise.then(function(pdf) {
+          var n = pdf.numPages;
+          pdf.destroy();
+          var backEntry = { file: backFile, type: 'pdf', pdfPageNum: 1, pdfTotalPages: n, isOpwBack: true };
+          doInterleave(backEntry);
+        });
+      }).catch(function(e) { console.error('Back PDF error:', e); });
+    } else if (isRasterFile(backFile.name)) {
+      // Raster back — process through raster pipeline first so rasterMeta is populated
+      processRasterFile(backFile).then(function(entry) {
+        if (entry) {
+          entry.isOpwBack = true;
+          doInterleave(entry);
+        }
+      }).catch(function(e) { console.error('Back raster error:', e); });
+    }
+  });
+})();
 
 // ── File handling events ──
 dropZone.addEventListener('click', function(ev) {
@@ -1996,6 +2132,13 @@ function extractWhitePlateThumb(uint8Array, spotColors, pageWidthPt, pageHeightP
   // Since content stream decompression needs async, restructure as promise
   function decompressStream(start, len) {
     var comp = uint8Array.slice(start, start + len);
+    // Try pako first (synchronous, more reliable)
+    if (typeof pako !== 'undefined') {
+      try {
+        var inflated = pako.inflate(comp);
+        return Promise.resolve(inflated);
+      } catch(e) { /* fall through to DecompressionStream */ }
+    }
     if (typeof DecompressionStream !== 'undefined') {
       return new Response(
         new Blob([comp]).stream().pipeThrough(new DecompressionStream('deflate'))
@@ -2006,6 +2149,7 @@ function extractWhitePlateThumb(uint8Array, spotColors, pageWidthPt, pageHeightP
 
   // Decompress the content stream to find placements
   var contentStreamPromise;
+  var _csText = ''; // hoisted for Step 10 vector knockout
   if (contentsMatch) {
     var contObj2 = parseInt(contentsMatch[1], 10);
     var contStart2 = text.indexOf(contObj2 + ' 0 obj');
@@ -2018,6 +2162,7 @@ function extractWhitePlateThumb(uint8Array, spotColors, pageWidthPt, pageHeightP
 
     contentStreamPromise = decompressStream(css2, contLen2).then(function(csBytes) {
       var csText = new TextDecoder('latin1').decode(csBytes);
+      _csText = csText; // save for Step 10
       // Parse CTM (cm) commands followed by image Do commands
       var lastCm = null;
       var lines = csText.split(/\r?\n|\r/);
@@ -2114,7 +2259,7 @@ function extractWhitePlateThumb(uint8Array, spotColors, pageWidthPt, pageHeightP
     return Promise.all(decompPromises).then(function() {
       // ── Step 8: Composite all layers onto one canvas ──
       // Use page dimensions as the coordinate space
-      var thumbMax = 400;
+      var thumbMax = 1200;
       var pageW = pageWidthPt || 2048;
       var pageH = pageHeightPt || 2952;
       var scale = Math.min(1, thumbMax / Math.max(pageW, pageH));
@@ -2201,18 +2346,232 @@ function extractWhitePlateThumb(uint8Array, spotColors, pageWidthPt, pageHeightP
         }
       });
 
-      // Apply CMYK separation knockout is not attempted here — that requires
-      // a full RIP/separation engine (like InDesign's). The raw OPW SMask
-      // composite is shown as-is: solid borders won't show text knockouts,
-      // but gradient artwork detail (dragon overlays etc.) is preserved.
+      // Reset composite operation for knockout layers
+      ctx.globalCompositeOperation = 'source-over';
 
-      return {
-        dataUrl: canvas.toDataURL('image/jpeg', 0.85),
-        width: tw,
-        height: th,
-        spotName: whiteSpot.rawName,
-        tintColor: whiteSpot.tintColor || null
-      };
+      // ── Step 9: Raster knockout for non-OPW SMask images ──
+      // Find images NOT in opwImages but with an SMask (stars, attribute icons, etc.)
+      // Paint solid white wherever their SMask is non-zero
+      var opwObjNums = {};
+      opwImages.forEach(function(oi) { opwObjNums[oi.objNum] = true; });
+      var rasterKnockoutPromises = [];
+      Object.keys(imageObjs).forEach(function(k) {
+        var objN = parseInt(k, 10);
+        if (opwObjNums[objN]) return; // skip OPW images
+        var imgObj = imageObjs[objN];
+        if (!imgObj.smask) return; // no SMask
+        var smaskImg = imageObjs[imgObj.smask];
+        if (!smaskImg) return;
+        // Find ALL placement CTMs for this image (same obj can be placed multiple times)
+        var allPlc = [];
+        for (var pi = 0; pi < placements.length; pi++) {
+          if (placements[pi].objNum === objN) { allPlc.push(placements[pi]); }
+        }
+        rasterKnockoutPromises.push(
+          decompressStream(smaskImg.streamStart, smaskImg.len).then(function(raw) {
+            var sw = smaskImg.w, sh = smaskImg.h;
+            var expected = sw * sh;
+            if (raw.length < expected && raw.length >= Math.ceil(expected / 2)) {
+              var unpacked = new Uint8Array(expected);
+              for (var ui = 0; ui < raw.length; ui++) {
+                var hi = (raw[ui] >> 4) & 0x0F;
+                var lo = raw[ui] & 0x0F;
+                var idx = ui * 2;
+                if (idx < expected) unpacked[idx] = hi * 17;
+                if (idx + 1 < expected) unpacked[idx + 1] = lo * 17;
+              }
+              raw = unpacked;
+            }
+            // Paint solid white wherever SMask pixel > 0
+            var tmpC = document.createElement('canvas');
+            tmpC.width = sw; tmpC.height = sh;
+            var tmpCtx = tmpC.getContext('2d');
+            var id = tmpCtx.createImageData(sw, sh);
+            var dd = id.data;
+            for (var yi = 0; yi < sh; yi++) {
+              for (var xi = 0; xi < sw; xi++) {
+                var si = yi * sw + xi;
+                var di = si * 4;
+                if (si < raw.length && raw[si] > 0) {
+                  dd[di] = 255; dd[di+1] = 255; dd[di+2] = 255; dd[di+3] = 255;
+                } else {
+                  dd[di+3] = 0;
+                }
+              }
+            }
+            tmpCtx.putImageData(id, 0, 0);
+            // Draw at EVERY placement position (same image placed multiple times)
+            if (allPlc.length > 0) {
+              for (var ai = 0; ai < allPlc.length; ai++) {
+                var cm = allPlc[ai].cm;
+                var srcWPt = cm[0], srcHPt = cm[3], srcXPt = cm[4], srcYPt = cm[5];
+                var dxR = (srcXPt / pageW) * tw;
+                var dyR = ((pageH - srcYPt - srcHPt) / pageH) * th;
+                var dwR = (srcWPt / pageW) * tw;
+                var dhR = (srcHPt / pageH) * th;
+                ctx.drawImage(tmpC, 0, 0, sw, sh, dxR, dyR, dwR, dhR);
+              }
+            } else {
+              ctx.drawImage(tmpC, 0, 0, sw, sh, 0, 0, tw, th);
+            }
+            console.log('OPW knockout: raster SMask obj', imgObj.smask, sw + 'x' + sh, 'at', allPlc.length, 'positions');
+          })
+        );
+      });
+
+      return Promise.all(rasterKnockoutPromises).then(function() {
+        // ── Step 10: Vector knockout for gradient text ──
+        if (_csText.length > 0) {
+          var tokens = _csText.split(/\s+/);
+          var vw2 = tw, vh2 = th;
+          var offC = document.createElement('canvas');
+          offC.width = vw2; offC.height = vh2;
+          var oc = offC.getContext('2d');
+          oc.clearRect(0, 0, vw2, vh2);
+
+          function _mulM(a, b) {
+            return [
+              a[0]*b[0]+a[2]*b[1], a[1]*b[0]+a[3]*b[1],
+              a[0]*b[2]+a[2]*b[3], a[1]*b[2]+a[3]*b[3],
+              a[0]*b[4]+a[2]*b[5]+a[4], a[1]*b[4]+a[3]*b[5]+a[5]
+            ];
+          }
+
+          var S = scale;
+          var vctm = _mulM([S, 0, 0, -S, 0, pageH*S], [1,0,0,1,0,0]);
+          var vstateStack = [];
+          var vCurrentPath = [];
+          var vPendingClip = null;
+          var vInText = false;
+          var vPaths = 0;
+
+          function _replayPath(pathArr, ctmArr, evenOdd) {
+            oc.save();
+            oc.setTransform(ctmArr[0], ctmArr[1], ctmArr[2], ctmArr[3], ctmArr[4], ctmArr[5]);
+            oc.beginPath();
+            for (var pi = 0; pi < pathArr.length; pi++) {
+              var p = pathArr[pi];
+              if (p.op === 'm') oc.moveTo(p.x, p.y);
+              else if (p.op === 'l') oc.lineTo(p.x, p.y);
+              else if (p.op === 'c') oc.bezierCurveTo(p.x1, p.y1, p.x2, p.y2, p.x3, p.y3);
+              else if (p.op === 'v') oc.bezierCurveTo(p.x2, p.y2, p.x2, p.y2, p.x3, p.y3);
+              else if (p.op === 'y') oc.bezierCurveTo(p.x1, p.y1, p.x3, p.y3, p.x3, p.y3);
+              else if (p.op === 'h') oc.closePath();
+              else if (p.op === 're') oc.rect(p.x, p.y, p.w, p.h);
+            }
+            oc.fillStyle = '#ffffff';
+            oc.fill(evenOdd ? 'evenodd' : 'nonzero');
+            oc.restore();
+          }
+
+          for (var ti = 0; ti < tokens.length; ti++) {
+            var t = tokens[ti];
+
+            if (t === 'q') {
+              vstateStack.push({ ctm: vctm.slice() });
+            } else if (t === 'Q') {
+              if (vstateStack.length) { var st = vstateStack.pop(); vctm = st.ctm; }
+              vPendingClip = null;
+            } else if (t === 'cm' && ti >= 6) {
+              var mm = [parseFloat(tokens[ti-6]),parseFloat(tokens[ti-5]),parseFloat(tokens[ti-4]),
+                        parseFloat(tokens[ti-3]),parseFloat(tokens[ti-2]),parseFloat(tokens[ti-1])];
+              if (mm.every(function(v2) { return !isNaN(v2); })) vctm = _mulM(mm, vctm);
+            } else if (t === 'BT') {
+              vInText = true;
+            } else if (t === 'ET') {
+              vInText = false;
+            } else if (t === 'm' && ti >= 2) {
+              var mx = parseFloat(tokens[ti-2]), my = parseFloat(tokens[ti-1]);
+              if (!isNaN(mx) && !isNaN(my)) vCurrentPath.push({ op: 'm', x: mx, y: my });
+            } else if (t === 'l' && ti >= 2) {
+              var lx = parseFloat(tokens[ti-2]), ly = parseFloat(tokens[ti-1]);
+              if (!isNaN(lx) && !isNaN(ly)) vCurrentPath.push({ op: 'l', x: lx, y: ly });
+            } else if (t === 'c' && ti >= 6) {
+              var cx1 = parseFloat(tokens[ti-6]), cy1 = parseFloat(tokens[ti-5]);
+              var cx2 = parseFloat(tokens[ti-4]), cy2 = parseFloat(tokens[ti-3]);
+              var cx3 = parseFloat(tokens[ti-2]), cy3 = parseFloat(tokens[ti-1]);
+              if ([cx1,cy1,cx2,cy2,cx3,cy3].every(function(v3) { return !isNaN(v3); }))
+                vCurrentPath.push({ op: 'c', x1: cx1, y1: cy1, x2: cx2, y2: cy2, x3: cx3, y3: cy3 });
+            } else if (t === 'v' && ti >= 4) {
+              var vx2 = parseFloat(tokens[ti-4]), vy2 = parseFloat(tokens[ti-3]);
+              var vx3 = parseFloat(tokens[ti-2]), vy3 = parseFloat(tokens[ti-1]);
+              if ([vx2,vy2,vx3,vy3].every(function(v4) { return !isNaN(v4); }))
+                vCurrentPath.push({ op: 'v', x2: vx2, y2: vy2, x3: vx3, y3: vy3 });
+            } else if (t === 'y' && ti >= 4) {
+              var yx1 = parseFloat(tokens[ti-4]), yy1 = parseFloat(tokens[ti-3]);
+              var yx3 = parseFloat(tokens[ti-2]), yy3 = parseFloat(tokens[ti-1]);
+              if ([yx1,yy1,yx3,yy3].every(function(v5) { return !isNaN(v5); }))
+                vCurrentPath.push({ op: 'y', x1: yx1, y1: yy1, x3: yx3, y3: yy3 });
+            } else if (t === 'h') {
+              vCurrentPath.push({ op: 'h' });
+            } else if (t === 're' && ti >= 4) {
+              var rx = parseFloat(tokens[ti-4]), ry = parseFloat(tokens[ti-3]);
+              var rw2 = parseFloat(tokens[ti-2]), rh2 = parseFloat(tokens[ti-1]);
+              if ([rx,ry,rw2,rh2].every(function(v6) { return !isNaN(v6); }))
+                vCurrentPath.push({ op: 're', x: rx, y: ry, w: rw2, h: rh2 });
+            } else if (t === 'W' || t === 'W*') {
+              vPendingClip = { path: vCurrentPath.slice(), ctm: vctm.slice(), evenOdd: t === 'W*' };
+            } else if (t === 'sh') {
+              if (vPendingClip && vPendingClip.path.length > 0) {
+                var cpBg = false;
+                var cpP = vPendingClip.path;
+                if (cpP.length === 1 && cpP[0].op === 're') {
+                  if (Math.abs(cpP[0].w * cpP[0].h) > pageW * pageH * 0.3) cpBg = true;
+                }
+                if (!cpBg) { _replayPath(vPendingClip.path, vPendingClip.ctm, vPendingClip.evenOdd); vPaths++; }
+              }
+              vPendingClip = null;
+            } else if (t === 'f' || t === 'F' || t === 'f*' || t === 'B' || t === 'B*' || t === 'b' || t === 'b*') {
+              if (vCurrentPath.length > 0 && !vInText) {
+                var isBg = false;
+                if (vCurrentPath.length === 1 && vCurrentPath[0].op === 're') {
+                  if (Math.abs(vCurrentPath[0].w * vCurrentPath[0].h) > pageW * pageH * 0.3) isBg = true;
+                }
+                if (!isBg) {
+                  _replayPath(vCurrentPath, vctm, t === 'f*' || t === 'B*' || t === 'b*');
+                  vPaths++;
+                }
+              }
+              vCurrentPath = [];
+            } else if (t === 'S' || t === 's' || t === 'n') {
+              vCurrentPath = [];
+            } else if (t === 'Do') {
+              vCurrentPath = [];
+            }
+          }
+
+          // Composite vector knockout: paint white pixels onto main canvas
+          if (vPaths > 0) {
+            var offData = oc.getImageData(0, 0, vw2, vh2);
+            var existing = ctx.getImageData(0, 0, tw, th);
+            var ed = existing.data;
+            var od = offData.data;
+            var painted = 0;
+            for (var py = 0; py < vh2 && py < th; py++) {
+              for (var px = 0; px < vw2 && px < tw; px++) {
+                var oi2 = (py * vw2 + px) * 4;
+                if (od[oi2] > 128 && od[oi2+3] > 128) {
+                  var ei = (py * tw + px) * 4;
+                  if (ei + 2 < ed.length) {
+                    ed[ei] = ed[ei+1] = ed[ei+2] = 255;
+                    painted++;
+                  }
+                }
+              }
+            }
+            ctx.putImageData(existing, 0, 0);
+            console.log('OPW knockout: ' + vPaths + ' vector paths, ' + painted + ' pixels painted white');
+          }
+        }
+
+        return {
+          dataUrl: canvas.toDataURL('image/jpeg', 0.85),
+          width: tw,
+          height: th,
+          spotName: whiteSpot.rawName,
+          tintColor: whiteSpot.tintColor || null
+        };
+      });
     });
   }).catch(function(e) {
     console.warn('White plate extraction failed:', e);
@@ -2229,16 +2588,16 @@ function applyCMYKSimulation(canvas) {
     // Skip near-whites — preserve paper/substrate color
     if (r > 230 && g > 230 && b > 230) continue;
     var lum = 0.299 * r + 0.587 * g + 0.114 * b;
-    // Base desaturation: keep 78% of chroma, blend 22% toward neutral gray
-    var factor = 0.78;
+    // Base desaturation: keep 92% of chroma, blend 8% toward neutral gray
+    var factor = 0.92;
     // Hue-dependent extra compression for out-of-gamut CMYK regions
     var mx = Math.max(r, g, b), mn = Math.min(r, g, b);
     var sat = mx === 0 ? 0 : (mx - mn) / mx;
     if (sat > 0.25) {
-      if (b > r && b > g) factor *= 0.80;             // vivid blues → biggest loss
-      else if (g > r && g > b) factor *= 0.85;         // vivid greens → big loss
-      else if (r > g && r > b && g > b) factor *= 0.92; // oranges → moderate loss
-      else if (r > g && r > b && b > g) factor *= 0.90; // magentas/pinks → moderate loss
+      if (b > r && b > g) factor *= 0.85;             // vivid blues → biggest loss
+      else if (g > r && g > b) factor *= 0.88;         // vivid greens → big loss
+      else if (r > g && r > b && g > b) factor *= 0.94; // oranges → moderate loss
+      else if (r > g && r > b && b > g) factor *= 0.92; // magentas/pinks → moderate loss
     }
     // Desaturate toward luminance
     var rr = lum + factor * (r - lum);
@@ -3116,6 +3475,7 @@ function collectAllResolutions(pagePlan, scale) {
   pagePlan.forEach(function(item) {
     if (item.type === 'raster') {
       var rm = item.rasterMeta;
+      if (!rm) return; // skip entries without raster metadata
       // For raster files, the DPI is what the user set in the modal
       // But we need to compute effective DPI at the SCALED print size
       var effDpi = Math.round(rm.dpi * (parseFloat(scale) || 1));
@@ -3123,10 +3483,11 @@ function collectAllResolutions(pagePlan, scale) {
     } else {
       // PDF: use PDF.js operator list to find embedded image dimensions
       // (raw byte scanning fails on compressed object streams)
-      promises.push(
-        item.file.arrayBuffer().then(function(buf) {
+      // Wrap in a timeout + catch so one bad PDF can't hang the whole scan
+      var scanPromise = item.file.arrayBuffer().then(function(buf) {
           var uint8 = new Uint8Array(buf);
-          return pdfjsLib.getDocument({ data: buf }).promise.then(function(pdf) {
+          var bufCopy = buf.slice ? buf.slice(0) : buf;
+          return pdfjsLib.getDocument({ data: bufCopy }).promise.then(function(pdf) {
             return pdf.getPage(item.pageNum).then(function(page) {
               var vp = page.getViewport({ scale: 1.0 });
               var pageW = vp.width / 72;
@@ -3197,8 +3558,15 @@ function collectAllResolutions(pagePlan, scale) {
               });
             });
           });
-        })
-      );
+        }).catch(function(e) {
+          console.warn('Resolution scan failed for ' + item.filename + ':', e);
+          // Don't block — just skip this file's resolution data
+        });
+      // 10-second timeout so one stuck PDF can't hang the whole scan
+      var timeoutPromise = new Promise(function(resolve) {
+        setTimeout(function() { resolve(); }, 10000);
+      });
+      promises.push(Promise.race([scanPromise, timeoutPromise]));
     }
   });
 
@@ -3250,7 +3618,8 @@ window.generateProof = function() {
         totalPages: 1,
         pageNum: 1,
         rasterMeta: rm,
-        perQty: entry.perQty || ''
+        perQty: entry.perQty || '',
+        isOpwBack: entry.isOpwBack || false
       });
       fileIdx++;
       readNextFile();
@@ -3262,7 +3631,8 @@ window.generateProof = function() {
         pageNum: entry.pdfPageNum || 1,
         filename: entry.file.name,
         totalPages: entry.pdfTotalPages || 1,
-        perQty: entry.perQty || ''
+        perQty: entry.perQty || '',
+        isOpwBack: entry.isOpwBack || false
       });
       fileIdx++;
       readNextFile();
@@ -3366,6 +3736,7 @@ window.generateProof = function() {
     var dblSame = document.getElementById('dbl_same_toggle').checked;
 
     // Build sheet plan — pair consecutive pages for double-sided jobs
+    // Also auto-pair OPW fronts with their interleaved backs regardless of print type
     var sheetPlan = [];
     if (isDoubleSided && dblSame) {
       // Same art both sides: each page becomes its own sheet with front duplicated to back
@@ -3380,9 +3751,15 @@ window.generateProof = function() {
         });
       }
     } else {
-      pagePlan.forEach(function(item) {
-        sheetPlan.push({ front: item, back: null });
-      });
+      // Single-sided — but auto-pair OPW fronts with their interleaved backs
+      for (var i = 0; i < pagePlan.length; i++) {
+        if (i + 1 < pagePlan.length && pagePlan[i + 1].isOpwBack) {
+          sheetPlan.push({ front: pagePlan[i], back: pagePlan[i + 1] });
+          i++; // skip the back entry
+        } else {
+          sheetPlan.push({ front: pagePlan[i], back: null });
+        }
+      }
     }
 
     var totalSheets = sheetPlan.length;
