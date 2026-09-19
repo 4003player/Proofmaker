@@ -1974,29 +1974,31 @@ function showSpotColorClassification(spotColors) {
       item.appendChild(sel);
       list.appendChild(item);
 
-      // White plate file picker row (shown when White is selected)
+      // White plate file picker row — ALWAYS appended after each spot item,
+      // visibility toggled by dropdown value
       var fileRow = document.createElement('div');
       fileRow.className = 'spot-file-row';
-      fileRow.style.cssText = 'display:none; padding:6px 0 6px 32px; font-size:12px; gap:8px; flex-direction:column;';
-      var fileLabel = document.createElement('span');
-      fileLabel.style.color = '#86868b';
+      fileRow.style.cssText = 'padding:8px 0 8px 32px; font-size:12px;';
+      if (sel.value !== 'white') fileRow.style.display = 'none';
+      var fileLabel = document.createElement('div');
+      fileLabel.style.cssText = 'color:#86868b; margin-bottom:4px;';
       fileLabel.textContent = 'Attach white plate file(s) — matched to pages in order:';
       var fileInput = document.createElement('input');
       fileInput.type = 'file';
       fileInput.accept = '.tif,.tiff,.jpg,.jpeg,.png,.pdf,.ai';
       fileInput.multiple = true;
-      fileInput.style.cssText = 'font-size:12px;';
+      fileInput.style.cssText = 'font-size:12px; display:block;';
       fileInput.setAttribute('data-spot-key', sc.key);
       fileRow.appendChild(fileLabel);
       fileRow.appendChild(fileInput);
       list.appendChild(fileRow);
 
-      // Show/hide file picker based on dropdown
-      function updateFileRow() {
-        fileRow.style.display = sel.value === 'white' ? 'flex' : 'none';
-      }
-      updateFileRow();
-      sel.addEventListener('change', updateFileRow);
+      // Show/hide file picker when dropdown changes
+      (function(row, dropdown) {
+        dropdown.addEventListener('change', function() {
+          row.style.display = dropdown.value === 'white' ? 'block' : 'none';
+        });
+      })(fileRow, sel);
     });
 
     modal.classList.add('active');
@@ -3963,14 +3965,7 @@ window.generateProof = function() {
               });
             }
 
-            // Fallback: try auto-extraction from PDF internals
-            if (result._rawBytes && result.spotColors && result.spotColors.some(function(sc) { return sc.type === 'white'; })) {
-              return extractWhitePlateThumb(result._rawBytes, result.spotColors, result.widthIn * 72, result.heightIn * 72).then(function(thumb) {
-                result.whitePlateThumb = thumb;
-                delete result._rawBytes;
-                return result;
-              });
-            }
+            // No user-provided white plate file — skip white plate panel
             delete result._rawBytes;
             return result;
           });
