@@ -1973,6 +1973,30 @@ function showSpotColorClassification(spotColors) {
       item.appendChild(name);
       item.appendChild(sel);
       list.appendChild(item);
+
+      // White plate file picker row (shown when White is selected)
+      var fileRow = document.createElement('div');
+      fileRow.className = 'spot-file-row';
+      fileRow.style.cssText = 'display:none; padding:6px 0 6px 32px; font-size:12px; gap:8px; flex-direction:column;';
+      var fileLabel = document.createElement('span');
+      fileLabel.style.color = '#86868b';
+      fileLabel.textContent = 'Attach white plate file(s) — matched to pages in order:';
+      var fileInput = document.createElement('input');
+      fileInput.type = 'file';
+      fileInput.accept = '.tif,.tiff,.jpg,.jpeg,.png,.pdf,.ai';
+      fileInput.multiple = true;
+      fileInput.style.cssText = 'font-size:12px;';
+      fileInput.setAttribute('data-spot-key', sc.key);
+      fileRow.appendChild(fileLabel);
+      fileRow.appendChild(fileInput);
+      list.appendChild(fileRow);
+
+      // Show/hide file picker based on dropdown
+      function updateFileRow() {
+        fileRow.style.display = sel.value === 'white' ? 'flex' : 'none';
+      }
+      updateFileRow();
+      sel.addEventListener('change', updateFileRow);
     });
 
     modal.classList.add('active');
@@ -1980,13 +2004,27 @@ function showSpotColorClassification(spotColors) {
     document.getElementById('spot-ok').onclick = function() {
       modal.classList.remove('active');
 
+      // Collect white plate files from file inputs
+      var wpFileInputs = list.querySelectorAll('input[type="file"][data-spot-key]');
+      var wpFilesMap = {}; // key -> [File, File, ...]
+      wpFileInputs.forEach(function(inp) {
+        var key = inp.getAttribute('data-spot-key');
+        if (inp.files && inp.files.length > 0) {
+          wpFilesMap[key] = Array.from(inp.files);
+        }
+      });
+
       // Apply classifications
       var selects = list.querySelectorAll('.spot-classify-select');
       selects.forEach(function(sel) {
         var key = sel.getAttribute('data-spot-key');
         var val = sel.value;
-        // Cache for subsequent files
+        // Cache for subsequent files — include white plate files
         _spotClassificationCache[key] = { type: val };
+        if (val === 'white' && wpFilesMap[key]) {
+          _spotClassificationCache[key].wpFiles = wpFilesMap[key];
+          _spotClassificationCache[key].wpFileIndex = 0; // counter for page sequencing
+        }
 
         // Update the spot in the array
         spotColors.forEach(function(sc) {
@@ -2020,6 +2058,105 @@ function showSpotColorClassification(spotColors) {
 
 // ── White plate thumbnail extraction (composite approach) ──
 // Finds ALL OPW images in the PDF, parses their placement CTMs from the
+
+// ── Load user-provided white plate file into a thumbnail ──
+// Accepts TIF, JPG, PNG, PDF, AI. Returns promise of { dataUrl, width, height, spotName }
+function loadWhitePlateFile(file) {
+  var lower = file.name.toLowerCase();
+  var isTiff = lower.endsWith('.tif') || lower.endsWith('.tiff');
+  var isPdf = lower.endsWith('.pdf') || lower.endsWith('.ai');
+
+  if (isPdf) {
+    // Render page 1 of the PDF/AI as grayscale thumbnail
+    return file.arrayBuffer().then(function(buf) {
+      return pdfjsLib.getDocument({ data: buf }).promise.then(function(pdf) {
+        return pdf.getPage(1).then(function(page) {
+          var vp = page.getViewport({ scale: 0.5 });
+          var maxPx = 600;
+          var s = Math.min(1, maxPx / Math.max(vp.width, vp.height));
+          if (s < 1) vp = page.getViewport({ scale: 0.5 * s });
+          var canvas = document.createElement('canvas');
+          canvas.width = vp.width; canvas.height = vp.height;
+          var ctx = canvas.getContext('2d');
+          return page.render({ canvasContext: ctx, viewport: vp }).promise.then(function() {
+            pdf.destroy();
+            // Convert to grayscale
+            var imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            var d = imgData.data;
+            for (var i = 0; i < d.length; i += 4) {
+              var gray = Math.round(d[i] * 0.299 + d[i+1] * 0.587 + d[i+2] * 0.114);
+              d[i] = gray; d[i+1] = gray; d[i+2] = gray;
+            }
+            ctx.putImageData(imgData, 0, 0);
+            return { dataUrl: canvas.toDataURL('image/jpeg', 0.85), width: canvas.width, height: canvas.height };
+          });
+        });
+      });
+    }).catch(function(e) { console.warn('WP PDF load failed:', e); return null; });
+  }
+
+  if (isTiff && typeof UTIF !== 'undefined') {
+    return file.arrayBuffer().then(function(buf) {
+      try {
+        var ifds = UTIF.decode(buf);
+        UTIF.decodeImage(buf, ifds[0]);
+        var rgba = UTIF.toRGBA8(ifds[0]);
+        var pw = ifds[0].width, ph = ifds[0].height;
+        var canvas = document.createElement('canvas');
+        var maxPx = 600;
+        var ratio = Math.min(1, maxPx / Math.max(pw, ph));
+        canvas.width = Math.round(pw * ratio);
+        canvas.height = Math.round(ph * ratio);
+        var tmp = document.createElement('canvas');
+        tmp.width = pw; tmp.height = ph;
+        var tctx = tmp.getContext('2d');
+        var id = tctx.createImageData(pw, ph);
+        id.data.set(new Uint8Array(rgba));
+        tctx.putImageData(id, 0, 0);
+        var ctx = canvas.getContext('2d');
+        ctx.drawImage(tmp, 0, 0, canvas.width, canvas.height);
+        // Convert to grayscale
+        var imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        var d = imgData.data;
+        for (var i = 0; i < d.length; i += 4) {
+          var gray = Math.round(d[i] * 0.299 + d[i+1] * 0.587 + d[i+2] * 0.114);
+          d[i] = gray; d[i+1] = gray; d[i+2] = gray;
+        }
+        ctx.putImageData(imgData, 0, 0);
+        return { dataUrl: canvas.toDataURL('image/jpeg', 0.85), width: canvas.width, height: canvas.height };
+      } catch(e) { console.warn('WP TIFF load failed:', e); return null; }
+    });
+  }
+
+  // JPG/PNG: native browser decode
+  return new Promise(function(resolve) {
+    var url = URL.createObjectURL(file);
+    var img = new Image();
+    img.onload = function() {
+      var canvas = document.createElement('canvas');
+      var maxPx = 600;
+      var ratio = Math.min(1, maxPx / Math.max(img.naturalWidth, img.naturalHeight));
+      canvas.width = Math.round(img.naturalWidth * ratio);
+      canvas.height = Math.round(img.naturalHeight * ratio);
+      var ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(url);
+      // Convert to grayscale
+      var imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      var d = imgData.data;
+      for (var i = 0; i < d.length; i += 4) {
+        var gray = Math.round(d[i] * 0.299 + d[i+1] * 0.587 + d[i+2] * 0.114);
+        d[i] = gray; d[i+1] = gray; d[i+2] = gray;
+      }
+      ctx.putImageData(imgData, 0, 0);
+      resolve({ dataUrl: canvas.toDataURL('image/jpeg', 0.85), width: canvas.width, height: canvas.height });
+    };
+    img.onerror = function() { URL.revokeObjectURL(url); resolve(null); };
+    img.src = url;
+  });
+}
+
+// ── White plate thumbnail extraction (composite approach — fallback) ──
 // content stream, and composites them onto a single canvas at the correct
 // positions. This handles the common case where a full-card binary base plate
 // and a detailed gradient artwork overlay are stacked as separate images.
@@ -3798,11 +3935,39 @@ window.generateProof = function() {
           }
 
           return classifyPromise.then(function() {
-            // Extract white plate thumbnail if a white spot was classified
+            // Check if user provided white plate file(s) via the classification modal
+            var whiteSpotKey = null;
+            if (result.spotColors) {
+              result.spotColors.forEach(function(sc) {
+                if (sc.type === 'white') whiteSpotKey = sc.key;
+              });
+            }
+            var cached = whiteSpotKey ? _spotClassificationCache[whiteSpotKey] : null;
+            var hasUserWpFile = cached && cached.wpFiles && cached.wpFileIndex < cached.wpFiles.length;
+
+            if (hasUserWpFile) {
+              // Use the next user-provided white plate file (matched to page sequence)
+              var wpFile = cached.wpFiles[cached.wpFileIndex];
+              cached.wpFileIndex++;
+              return loadWhitePlateFile(wpFile).then(function(thumb) {
+                if (thumb) {
+                  thumb.spotName = whiteSpotKey || 'OPW';
+                  // Find the raw spot name for label
+                  result.spotColors.forEach(function(sc) {
+                    if (sc.type === 'white') thumb.spotName = sc.rawName;
+                  });
+                  result.whitePlateThumb = thumb;
+                }
+                delete result._rawBytes;
+                return result;
+              });
+            }
+
+            // Fallback: try auto-extraction from PDF internals
             if (result._rawBytes && result.spotColors && result.spotColors.some(function(sc) { return sc.type === 'white'; })) {
               return extractWhitePlateThumb(result._rawBytes, result.spotColors, result.widthIn * 72, result.heightIn * 72).then(function(thumb) {
                 result.whitePlateThumb = thumb;
-                delete result._rawBytes; // free memory
+                delete result._rawBytes;
                 return result;
               });
             }
