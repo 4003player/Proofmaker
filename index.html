@@ -75,6 +75,13 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
 }
 .file-item .qty-input::placeholder { color: #ccc; font-size: 10px; }
 .file-item .qty-input:focus { outline: none; border-color: #0071e3; box-shadow: 0 0 0 2px rgba(0,113,227,0.15); }
+.file-item .wp-btn {
+  background: none; border: 1px dashed #b0b0b5; color: #86868b; cursor: pointer;
+  font-size: 10px; font-weight: 600; padding: 3px 7px; border-radius: 6px;
+  margin-left: 8px; white-space: nowrap; transition: all 0.15s; line-height: 1.2;
+}
+.file-item .wp-btn:hover { border-color: #0071e3; color: #0071e3; background: rgba(0,113,227,0.04); }
+.file-item .wp-btn.has-file { border-style: solid; border-color: #34c759; color: #34c759; background: rgba(52,199,89,0.06); }
 
 /* Forms */
 .form-row { display: flex; gap: 12px; margin-bottom: 10px; }
@@ -161,6 +168,13 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
   background: #e8e8ed; color: #1d1d1f; transition: all 0.2s;
 }
 .btn-new:hover { background: #dcdce0; }
+.btn-edit {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 14px 28px; border: 2px solid #0071e3; border-radius: 12px;
+  font-size: 15px; font-weight: 600; cursor: pointer;
+  background: #fff; color: #0071e3; transition: all 0.2s;
+}
+.btn-edit:hover { background: #f0f7ff; }
 
 /* PDF Preview Viewer */
 .preview-viewer {
@@ -528,7 +542,9 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
           <option value="0.0625">1/16</option>
           <option value="0.05">1/20</option>
           <option value="0.020833">1/48</option>
+          <option value="custom">Custom %</option>
         </select>
+        <input type="number" id="scale_custom" min="1" max="100" step="1" placeholder="e.g. 65" style="display:none; margin-top:6px; width:100%; padding:9px 11px; border:1px solid #d2d2d7; border-radius:8px; font-size:14px; font-family:inherit; background:#fafafa;">
       </div>
     </div>
     <div class="form-row" id="dbl-same-row" style="display:none;">
@@ -601,6 +617,7 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
   </div>
   <div class="result-actions">
     <a id="download-link" class="btn-download" download>⬇ Download PDF</a>
+    <button class="btn-edit" id="edit-btn">✎ Edit & Regenerate</button>
     <button class="btn-new" id="reset-btn">← Make Another</button>
   </div>
 </div>
@@ -652,6 +669,11 @@ printTypeInput.addEventListener('input', updateDblSameVisibility);
 printTypeInput.addEventListener('change', updateDblSameVisibility);
 dblSameToggle.addEventListener('change', function() {
   dblSameHint.textContent = dblSameToggle.checked ? 'Front duplicated to back' : 'Each file needs front & back';
+});
+
+// Custom scale toggle
+document.getElementById('scale_str').addEventListener('change', function() {
+  document.getElementById('scale_custom').style.display = this.value === 'custom' ? 'block' : 'none';
 });
 
 // ── Collected files ──
@@ -1426,9 +1448,22 @@ function renderFileList() {
       infoText = entry.rasterMeta.trimW.toFixed(1) + '" \u00d7 ' + entry.rasterMeta.trimH.toFixed(1) + '" \u00b7 ' + entry.rasterMeta.dpi + ' DPI';
     }
     var savedQty = entry.perQty || '';
+    var savedScale = entry.perScale || '';
+    var wpBtnHtml = '';
+    if (!entry.isOpwBack) {
+      if (entry.whitePlateFile) {
+        var wpName = entry.whitePlateFile.name;
+        if (wpName.length > 16) wpName = wpName.substring(0, 13) + '\u2026';
+        wpBtnHtml = '<button class="wp-btn has-file" title="White plate: ' + entry.whitePlateFile.name + ' (click to change)" onclick="window._addWhitePlate(' + i + ')">WP \u2713</button>';
+      } else {
+        wpBtnHtml = '<button class="wp-btn" title="Attach white plate file" onclick="window._addWhitePlate(' + i + ')">+ WP</button>';
+      }
+    }
     li.innerHTML = '<span class="drag-handle" title="Drag to reorder">\u2261</span>' +
       '<span class="name">' + displayName + badge + '</span>' +
       '<span class="info">' + infoText + '</span>' +
+      wpBtnHtml +
+      '<input type="text" class="qty-input" placeholder="Scale" title="Per-file scale override (e.g. 1/4, 65%)" value="' + savedScale + '" data-file-idx="' + i + '" onchange="window._setFileScale(' + i + ', this.value)" oninput="window._setFileScale(' + i + ', this.value)" style="width:56px;">' +
       '<input type="text" class="qty-input" placeholder="Qty" value="' + savedQty + '" data-file-idx="' + i + '" onchange="window._setFileQty(' + i + ', this.value)" oninput="window._setFileQty(' + i + ', this.value)">' +
       '<button class="remove" onclick="window._removeFile(' + i + ')">&#10005;</button>';
 
@@ -1459,8 +1494,45 @@ function renderFileList() {
 }
 window._removeFile = function(idx) { allFiles.splice(idx, 1); renderFileList(); };
 window._setFileQty = function(idx, val) { if (allFiles[idx]) allFiles[idx].perQty = val.trim(); };
+window._setFileScale = function(idx, val) { if (allFiles[idx]) allFiles[idx].perScale = val.trim(); };
+
+// ── White plate file attachment per file ──
+var _wpFileInput = document.createElement('input');
+_wpFileInput.type = 'file';
+_wpFileInput.accept = '.tif,.tiff,.jpg,.jpeg,.png,.pdf,.ai';
+_wpFileInput.style.display = 'none';
+document.body.appendChild(_wpFileInput);
+var _wpTargetIdx = -1;
+window._addWhitePlate = function(idx) {
+  _wpTargetIdx = idx;
+  _wpFileInput.value = '';
+  _wpFileInput.click();
+};
+_wpFileInput.addEventListener('change', function() {
+  if (_wpFileInput.files.length && _wpTargetIdx >= 0 && allFiles[_wpTargetIdx]) {
+    allFiles[_wpTargetIdx].whitePlateFile = _wpFileInput.files[0];
+    renderFileList();
+  }
+  _wpTargetIdx = -1;
+});
 
 // ── Helper functions ──
+
+// Parse flexible scale input: "1/4", "1:4", "25%", "65%", "0.25", etc.
+// Returns the internal scale divisor (same as the select values), or null if unparseable.
+// e.g. "1/4" → 0.25 (stored as "0.25"), "65%" → 100/65 ≈ 1.538
+function parseScaleInput(str) {
+  str = str.trim();
+  if (!str) return null;
+  // Fraction: "1/4" or "1:4"
+  var fracMatch = str.match(/^1\s*[\/\:]\s*(\d+(?:\.\d+)?)$/);
+  if (fracMatch) { var d = parseFloat(fracMatch[1]); return d > 0 ? (1/d).toString() : null; }
+  // Percentage: "65%" or "65"
+  var pctMatch = str.match(/^(\d+(?:\.\d+)?)\s*%?$/);
+  if (pctMatch) { var p = parseFloat(pctMatch[1]); return (p > 0) ? (100/p).toString() : null; }
+  return null;
+}
+
 function fmtDim(inches) {
   if (inches === Math.floor(inches)) return inches + '"';
   return inches.toFixed(2) + '"';
@@ -3061,7 +3133,17 @@ function drawProofPage(doc, frontImg, opts) {
   var actualH = displayH / scale;
 
   if (scale !== 1) {
-    field('File Scale', '1/' + Math.round(1/scale) + '  (file: ' + frontImg.widthIn.toFixed(2) + '" \u00d7 ' + frontImg.heightIn.toFixed(2) + '")');
+    var scaleLabel;
+    if (opts.scaleRaw) {
+      // User typed a raw value — normalize for display
+      var raw = opts.scaleRaw;
+      if (/^1\s*[\/:]/.test(raw)) { scaleLabel = raw; }
+      else { scaleLabel = Math.round(100 / scale) + '%'; }
+    } else {
+      var reciprocal = 1 / scale;
+      scaleLabel = (reciprocal > 1 && Math.abs(reciprocal - Math.round(reciprocal)) < 0.01) ? '1/' + Math.round(reciprocal) : Math.round(100 / scale) + '%';
+    }
+    field('File Scale', scaleLabel + '  (file: ' + frontImg.widthIn.toFixed(2) + '"' + ' × ' + frontImg.heightIn.toFixed(2) + '"' + ')');
   }
 
   if (hasDieLine) {
@@ -3189,26 +3271,29 @@ function drawProofPage(doc, frontImg, opts) {
       }
     }
 
-    // Dimension arrows — on last non-WP panel (front or back)
-    var lastArtPanel = panels.length - 1;
-    var lastPanelX = startX + lastArtPanel * (drawW + gap);
+    // Dimension arrows — on the FRONT panel (primary artwork)
+    var frontPanelIdx = -1;
+    for (var fi = 0; fi < panels.length; fi++) { if (panels[fi].type === 'front') { frontPanelIdx = fi; break; } }
+    if (frontPanelIdx < 0) frontPanelIdx = panels.length - 1;
+    var dimPanelX = startX + frontPanelIdx * (drawW + gap);
     doc.setDrawColor(BLACK); doc.setLineWidth(0.007);
     var arrLen = 0.05;
 
-    // Horizontal (above last panel)
+    // Horizontal (above front panel)
     var dimYT = centerY - 0.14;
-    doc.line(lastPanelX, dimYT, lastPanelX + drawW, dimYT);
-    doc.line(lastPanelX, dimYT, lastPanelX + arrLen, dimYT - arrLen/2);
-    doc.line(lastPanelX, dimYT, lastPanelX + arrLen, dimYT + arrLen/2);
-    doc.line(lastPanelX + drawW, dimYT, lastPanelX + drawW - arrLen, dimYT - arrLen/2);
-    doc.line(lastPanelX + drawW, dimYT, lastPanelX + drawW - arrLen, dimYT + arrLen/2);
-    doc.line(lastPanelX, dimYT - 0.08, lastPanelX, dimYT + 0.08);
-    doc.line(lastPanelX + drawW, dimYT - 0.08, lastPanelX + drawW, dimYT + 0.08);
+    doc.line(dimPanelX, dimYT, dimPanelX + drawW, dimYT);
+    doc.line(dimPanelX, dimYT, dimPanelX + arrLen, dimYT - arrLen/2);
+    doc.line(dimPanelX, dimYT, dimPanelX + arrLen, dimYT + arrLen/2);
+    doc.line(dimPanelX + drawW, dimYT, dimPanelX + drawW - arrLen, dimYT - arrLen/2);
+    doc.line(dimPanelX + drawW, dimYT, dimPanelX + drawW - arrLen, dimYT + arrLen/2);
+    doc.line(dimPanelX, dimYT - 0.08, dimPanelX, dimYT + 0.08);
+    doc.line(dimPanelX + drawW, dimYT - 0.08, dimPanelX + drawW, dimYT + 0.08);
     doc.setFontSize(8); doc.setTextColor(BLACK);
-    doc.text(fmtDim(actualW), lastPanelX + drawW/2, dimYT - 0.06, { align: 'center' });
+    doc.text(fmtDim(actualW), dimPanelX + drawW/2, dimYT - 0.06, { align: 'center' });
 
-    // Vertical (right of last panel)
-    var dimXR = lastPanelX + drawW + 0.14;
+    // Vertical (right of rightmost panel)
+    var lastPanelRight = startX + (panels.length - 1) * (drawW + gap) + drawW;
+    var dimXR = lastPanelRight + 0.14;
     doc.line(dimXR, centerY, dimXR, centerY + drawH);
     doc.line(dimXR, centerY, dimXR - arrLen/2, centerY + arrLen);
     doc.line(dimXR, centerY, dimXR + arrLen/2, centerY + arrLen);
@@ -3520,6 +3605,14 @@ function drawProofPage(doc, frontImg, opts) {
 // ── Wire up buttons ──
 genBtn.addEventListener('click', function() { generateProof(); });
 document.getElementById('reset-btn').addEventListener('click', function() { resetForm(); });
+document.getElementById('edit-btn').addEventListener('click', function() {
+  document.getElementById('result-section').classList.remove('active');
+  document.getElementById('form-section').style.display = 'block';
+  var viewer = document.getElementById('preview-viewer');
+  if (viewer.classList.contains('fullscreen')) viewer.classList.remove('fullscreen');
+  document.getElementById('pv-fullscreen').textContent = '⛶ Fullscreen';
+  if (_pvPdf) { _pvPdf.destroy(); _pvPdf = null; }
+});
 
 // ── Scan PDF for embedded image XObject resolutions ──
 // Parses raw PDF bytes for image Width/Height in XObjects
@@ -3727,6 +3820,11 @@ window.generateProof = function() {
   var substrate = document.getElementById('substrate').value.trim();
   var printType = document.getElementById('print_type').value.trim() || '4/0';
   var scale = document.getElementById('scale_str').value;
+  if (scale === 'custom') {
+    var pct = parseFloat(document.getElementById('scale_custom').value);
+    if (!pct || pct <= 0 || pct > 100) { alert('Please enter a valid scale percentage (1–100).'); return; }
+    scale = (100 / pct).toString();
+  }
   var finishing = document.getElementById('finishing_notes').value.trim();
   var extraNotes = document.getElementById('extra_notes').value.trim();
   var branded = document.getElementById('branded_toggle').checked;
@@ -3758,7 +3856,9 @@ window.generateProof = function() {
         pageNum: 1,
         rasterMeta: rm,
         perQty: entry.perQty || '',
-        isOpwBack: entry.isOpwBack || false
+        perScale: entry.perScale || '',
+        isOpwBack: entry.isOpwBack || false,
+        whitePlateFile: entry.whitePlateFile || null
       });
       fileIdx++;
       readNextFile();
@@ -3771,7 +3871,9 @@ window.generateProof = function() {
         filename: entry.file.name,
         totalPages: entry.pdfTotalPages || 1,
         perQty: entry.perQty || '',
-        isOpwBack: entry.isOpwBack || false
+        perScale: entry.perScale || '',
+        isOpwBack: entry.isOpwBack || false,
+        whitePlateFile: entry.whitePlateFile || null
       });
       fileIdx++;
       readNextFile();
@@ -3911,7 +4013,7 @@ window.generateProof = function() {
     function getPageImage(item) {
       if (item.type === 'raster') {
         var rm = item.rasterMeta;
-        return Promise.resolve({
+        var rasterResult = {
           imgDataUrl: rm.imgDataUrl,
           widthIn: rm.widthIn,
           heightIn: rm.heightIn,
@@ -3920,7 +4022,18 @@ window.generateProof = function() {
           trimBox: rm.bleed > 0 ? { widthIn: rm.trimW, heightIn: rm.trimH } : null,
           spotColors: [],
           rasterInfo: { dpi: rm.dpi, pixW: rm.pixW, pixH: rm.pixH, bleed: rm.bleed }
-        });
+        };
+        // Check for per-file white plate attachment
+        if (item.whitePlateFile) {
+          return loadWhitePlateFile(item.whitePlateFile).then(function(thumb) {
+            if (thumb) {
+              thumb.spotName = item.whitePlateFile.name;
+              rasterResult.whitePlateThumb = thumb;
+            }
+            return rasterResult;
+          });
+        }
+        return Promise.resolve(rasterResult);
       } else {
         return renderPdfPageToImage(item.file, item.pageNum).then(function(result) {
           // If there are unclassified spot colors, show the classification modal
@@ -3937,7 +4050,25 @@ window.generateProof = function() {
           }
 
           return classifyPromise.then(function() {
-            // Check if user provided white plate file(s) via the classification modal
+            // Priority 1: per-file white plate attachment from file list WP button
+            if (item.whitePlateFile) {
+              return loadWhitePlateFile(item.whitePlateFile).then(function(thumb) {
+                if (thumb) {
+                  thumb.spotName = item.whitePlateFile.name;
+                  // Try to find a white spot name for a better label
+                  if (result.spotColors) {
+                    result.spotColors.forEach(function(sc) {
+                      if (sc.type === 'white') thumb.spotName = sc.rawName;
+                    });
+                  }
+                  result.whitePlateThumb = thumb;
+                }
+                delete result._rawBytes;
+                return result;
+              });
+            }
+
+            // Priority 2: white plate file(s) via the classification modal
             var whiteSpotKey = null;
             if (result.spotColors) {
               result.spotColors.forEach(function(sc) {
@@ -4000,9 +4131,18 @@ window.generateProof = function() {
 
           var sheetQty = (sheet.front.perQty || '') || qty;
 
+          // Per-file scale: parse user input, fall back to global scale
+          var sheetScale = scale;
+          var sheetScaleRaw = '';
+          var perScaleStr = sheet.front.perScale || '';
+          if (perScaleStr) {
+            var parsed = parseScaleInput(perScaleStr);
+            if (parsed) { sheetScale = parsed.toString(); sheetScaleRaw = perScaleStr.trim(); }
+          }
+
           drawProofPage(doc, frontImg, {
             clientName: clientName, jobNumber: jobNumber, date: date, qty: sheetQty,
-            substrate: substrate, printType: printType, scale: scale, finishing: finishing,
+            substrate: substrate, printType: printType, scale: sheetScale, scaleRaw: sheetScaleRaw, finishing: finishing,
             notes: extraNotes,
             filename: sheet.front.filename, pageLabel: pageLabel, branded: branded,
             backImg: backImg,
