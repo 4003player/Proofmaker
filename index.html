@@ -220,6 +220,43 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
   flex: 1; height: auto;
 }
 
+/* Substrate group cards */
+.substrate-group {
+  position: relative; border-left: 3px solid #0071e3;
+}
+.substrate-group-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 14px; padding-bottom: 6px; border-bottom: 1px solid #f0f0f0;
+}
+.substrate-group-header h2 {
+  margin: 0; padding: 0; border: none;
+  font-size: 12px; font-weight: 600; color: #0071e3;
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+.substrate-group-header .sg-remove {
+  background: none; border: 1px solid #e8e8ed; color: #b91c1c; cursor: pointer;
+  font-size: 14px; font-weight: bold; padding: 2px 8px; border-radius: 6px;
+  transition: all 0.15s; line-height: 1.2;
+}
+.substrate-group-header .sg-remove:hover { background: #fee2e2; border-color: #fca5a5; }
+.substrate-group .sg-inner-label {
+  font-size: 11px; font-weight: 600; color: #86868b;
+  text-transform: uppercase; letter-spacing: 0.3px;
+  margin: 14px 0 8px 0;
+}
+
+/* Add substrate button */
+.btn-add-substrate {
+  display: block; width: 100%; padding: 12px; border: 2px dashed #d2d2d7;
+  border-radius: 12px; font-size: 15px; font-weight: 600; cursor: pointer;
+  background: #fafafa; color: #0071e3; text-align: center;
+  transition: all 0.2s; margin-bottom: 16px;
+}
+.btn-add-substrate:hover {
+  border-color: #0071e3; background: #f0f7ff;
+  transform: translateY(-1px); box-shadow: 0 2px 8px rgba(0,113,227,0.15);
+}
+
 .footer { text-align: center; margin-top: 20px; font-size: 11px; color: #bbb; }
 
 /* Raster info modal */
@@ -489,23 +526,9 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
     <p>Drop your print-ready PDFs or images and fill in the job details</p>
   </header>
 
-  <!-- File drop -->
+  <!-- Job info (shared across all substrates) -->
   <div class="card">
-    <h2>Files</h2>
-    <div class="file-drop" id="pdf-drop">
-      <div class="icon">📄</div>
-      <p>Click here or drag & drop your files</p>
-      <div class="sub">PDF, AI, TIF, JPG, PNG — each becomes a proof sheet</div>
-    </div>
-    <input type="file" id="pdf-input" accept=".pdf,.ai,.tif,.tiff,.jpg,.jpeg,.png" multiple style="display:none;">
-    <div class="file-list" id="file-list" style="display:none;">
-      <ul id="file-items"></ul>
-    </div>
-  </div>
-
-  <!-- Job details -->
-  <div class="card">
-    <h2>Job Details</h2>
+    <h2>Job Info</h2>
     <div class="form-row">
       <div class="form-group">
         <label>Client Name *</label>
@@ -516,62 +539,15 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
         <input type="text" id="job_number" placeholder="e.g. 271669">
       </div>
     </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>Quantity</label>
-        <input type="text" id="qty" placeholder="e.g. 500">
-      </div>
-      <div class="form-group">
-        <label>Substrate / Material</label>
-        <input type="text" id="substrate" placeholder="e.g. 14pt C2S, Vinyl">
-      </div>
-    </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>Print</label>
-        <input type="text" id="print_type" value="4/0" placeholder="e.g. 4/0, 4/4, 4/0 + 2 PMS">
-      </div>
-      <div class="form-group">
-        <label>Scale</label>
-        <select id="scale_str">
-          <option value="1" selected>Full size (1:1)</option>
-          <option value="0.5">1/2</option>
-          <option value="0.25">1/4</option>
-          <option value="0.125">1/8</option>
-          <option value="0.1">1/10</option>
-          <option value="0.0625">1/16</option>
-          <option value="0.05">1/20</option>
-          <option value="0.020833">1/48</option>
-          <option value="custom">Custom %</option>
-        </select>
-        <input type="number" id="scale_custom" min="1" max="100" step="1" placeholder="e.g. 65" style="display:none; margin-top:6px; width:100%; padding:9px 11px; border:1px solid #d2d2d7; border-radius:8px; font-size:14px; font-family:inherit; background:#fafafa;">
-      </div>
-    </div>
-    <div class="form-row" id="dbl-same-row" style="display:none;">
-      <div class="form-group" style="flex:none;">
-        <div class="toggle-row" style="margin-bottom:0;">
-          <label class="toggle-switch">
-            <input type="checkbox" id="dbl_same_toggle">
-            <span class="toggle-slider"></span>
-          </label>
-          <span class="toggle-label">Same art both sides</span>
-          <span class="toggle-hint" id="dbl-same-hint">Each file needs front & back</span>
-        </div>
-      </div>
-    </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>Finishing</label>
-        <input type="text" id="finishing_notes" placeholder="e.g. Trim to size, UV coat, grommets">
-      </div>
-    </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>Notes</label>
-        <input type="text" id="extra_notes" placeholder="Optional notes for proof">
-      </div>
-    </div>
   </div>
+
+  <!-- Substrate groups container -->
+  <div id="substrate-groups"></div>
+
+  <!-- Add substrate button -->
+  <button class="btn btn-add-substrate" id="add-substrate-btn" type="button">
+    ＋ Add Substrate
+  </button>
 
   <!-- Branding toggle -->
   <div class="card">
@@ -626,8 +602,14 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
 // ── Prevent browser default file-open on drag/drop ──
 document.addEventListener('dragover', function(e) { e.preventDefault(); }, false);
 document.addEventListener('drop', function(e) {
-  var dz = document.getElementById('pdf-drop');
-  if (!dz || !dz.contains(e.target)) { e.preventDefault(); }
+  // Allow drops on substrate group drop zones, prevent everywhere else
+  var target = e.target;
+  while (target && target !== document) {
+    if (target.classList && target.classList.contains('file-drop')) return;
+    if (target.id && target.id === 'opw-back-drop') return;
+    target = target.parentElement;
+  }
+  e.preventDefault();
 }, false);
 
 window.addEventListener('DOMContentLoaded', function() {
@@ -653,32 +635,495 @@ brandedToggle.addEventListener('change', function() {
   brandHint.textContent = brandedToggle.checked ? 'Logo on proof' : 'White label';
 });
 
-// ── Double-sided same toggle ──
-var printTypeInput = document.getElementById('print_type');
-var dblSameRow = document.getElementById('dbl-same-row');
-var dblSameToggle = document.getElementById('dbl_same_toggle');
-var dblSameHint = document.getElementById('dbl-same-hint');
+// ══════════════════════════════════════════════
+// ── Multi-substrate group system ──
+// ══════════════════════════════════════════════
+// Each substrate group has its own: files, substrate, qty, print type, scale,
+// finishing, notes, double-sided toggle, file drop zone, file list.
+// Client name and job number are shared across all groups.
 
-function updateDblSameVisibility() {
-  var pt = printTypeInput.value.toLowerCase();
-  var isDouble = /\b[1-9]\/[1-9]\b/.test(pt) || pt.indexOf('double') >= 0;
-  dblSameRow.style.display = isDouble ? 'flex' : 'none';
-  if (!isDouble) dblSameToggle.checked = false;
+var substrateGroups = []; // Array of group state objects
+var _groupIdCounter = 0;
+
+function createSubstrateGroup() {
+  var gid = _groupIdCounter++;
+  var group = {
+    id: gid,
+    files: [], // allFiles equivalent per group
+    pendingRasterQueue: [],
+    processingRaster: false
+  };
+  substrateGroups.push(group);
+
+  var container = document.getElementById('substrate-groups');
+  var card = document.createElement('div');
+  card.className = 'card substrate-group';
+  card.id = 'sg-' + gid;
+
+  var canRemove = substrateGroups.length > 1;
+  card.innerHTML =
+    '<div class="substrate-group-header">' +
+      '<h2 id="sg-title-' + gid + '">Substrate ' + (substrateGroups.length) + '</h2>' +
+      '<button class="sg-remove" id="sg-remove-' + gid + '" title="Remove this substrate group" ' +
+        (canRemove ? '' : 'style="display:none;"') + '>✕ Remove</button>' +
+    '</div>' +
+    '<!-- File drop -->' +
+    '<div class="file-drop" id="sg-drop-' + gid + '">' +
+      '<div class="icon">📄</div>' +
+      '<p>Click here or drag & drop your files</p>' +
+      '<div class="sub">PDF, AI, TIF, JPG, PNG — each becomes a proof sheet</div>' +
+    '</div>' +
+    '<input type="file" id="sg-input-' + gid + '" accept=".pdf,.ai,.tif,.tiff,.jpg,.jpeg,.png" multiple style="display:none;">' +
+    '<div class="file-list" id="sg-flist-' + gid + '" style="display:none;">' +
+      '<ul id="sg-fitems-' + gid + '"></ul>' +
+    '</div>' +
+    '<div class="sg-inner-label">Details</div>' +
+    '<div class="form-row">' +
+      '<div class="form-group">' +
+        '<label>Quantity</label>' +
+        '<input type="text" id="sg-qty-' + gid + '" placeholder="e.g. 500">' +
+      '</div>' +
+      '<div class="form-group">' +
+        '<label>Substrate / Material</label>' +
+        '<input type="text" id="sg-substrate-' + gid + '" placeholder="e.g. 14pt C2S, Vinyl">' +
+      '</div>' +
+    '</div>' +
+    '<div class="form-row">' +
+      '<div class="form-group">' +
+        '<label>Print</label>' +
+        '<input type="text" id="sg-print-' + gid + '" value="4/0" placeholder="e.g. 4/0, 4/4, 4/0 + 2 PMS">' +
+      '</div>' +
+      '<div class="form-group">' +
+        '<label>Scale</label>' +
+        '<select id="sg-scale-' + gid + '">' +
+          '<option value="1" selected>Full size (1:1)</option>' +
+          '<option value="0.5">1/2</option>' +
+          '<option value="0.25">1/4</option>' +
+          '<option value="0.125">1/8</option>' +
+          '<option value="0.1">1/10</option>' +
+          '<option value="0.0625">1/16</option>' +
+          '<option value="0.05">1/20</option>' +
+          '<option value="0.020833">1/48</option>' +
+          '<option value="custom">Custom %</option>' +
+        '</select>' +
+        '<input type="number" id="sg-scalecustom-' + gid + '" min="1" max="100" step="1" placeholder="e.g. 65" style="display:none; margin-top:6px; width:100%; padding:9px 11px; border:1px solid #d2d2d7; border-radius:8px; font-size:14px; font-family:inherit; background:#fafafa;">' +
+      '</div>' +
+    '</div>' +
+    '<div class="form-row" id="sg-dblrow-' + gid + '" style="display:none;">' +
+      '<div class="form-group" style="flex:none;">' +
+        '<div class="toggle-row" style="margin-bottom:0;">' +
+          '<label class="toggle-switch">' +
+            '<input type="checkbox" id="sg-dblsame-' + gid + '">' +
+            '<span class="toggle-slider"></span>' +
+          '</label>' +
+          '<span class="toggle-label">Same art both sides</span>' +
+          '<span class="toggle-hint" id="sg-dblhint-' + gid + '">Each file needs front & back</span>' +
+        '</div>' +
+      '</div>' +
+    '</div>' +
+    '<div class="form-row">' +
+      '<div class="form-group">' +
+        '<label>Finishing</label>' +
+        '<input type="text" id="sg-finishing-' + gid + '" placeholder="e.g. Trim to size, UV coat, grommets">' +
+      '</div>' +
+    '</div>' +
+    '<div class="form-row">' +
+      '<div class="form-group">' +
+        '<label>Notes</label>' +
+        '<input type="text" id="sg-notes-' + gid + '" placeholder="Optional notes for proof">' +
+      '</div>' +
+    '</div>';
+
+  container.appendChild(card);
+
+  // Wire up events for this group
+  wireSubstrateGroupEvents(gid, group);
+  updateGroupTitles();
+  updateGenBtnState();
+  return group;
 }
-printTypeInput.addEventListener('input', updateDblSameVisibility);
-printTypeInput.addEventListener('change', updateDblSameVisibility);
-dblSameToggle.addEventListener('change', function() {
-  dblSameHint.textContent = dblSameToggle.checked ? 'Front duplicated to back' : 'Each file needs front & back';
+
+function wireSubstrateGroupEvents(gid, group) {
+  var dropZone = document.getElementById('sg-drop-' + gid);
+  var fileInput = document.getElementById('sg-input-' + gid);
+  var removeBtn = document.getElementById('sg-remove-' + gid);
+  var printInput = document.getElementById('sg-print-' + gid);
+  var dblRow = document.getElementById('sg-dblrow-' + gid);
+  var dblToggle = document.getElementById('sg-dblsame-' + gid);
+  var dblHint = document.getElementById('sg-dblhint-' + gid);
+  var scaleSelect = document.getElementById('sg-scale-' + gid);
+  var scaleCustom = document.getElementById('sg-scalecustom-' + gid);
+
+  // Drop zone click
+  dropZone.addEventListener('click', function(ev) {
+    ev.stopPropagation();
+    fileInput.value = '';
+    fileInput.click();
+  });
+
+  // Drag & drop
+  ['dragenter','dragover'].forEach(function(e) {
+    dropZone.addEventListener(e, function(ev) { ev.preventDefault(); ev.stopPropagation(); dropZone.classList.add('dragover'); });
+  });
+  ['dragleave'].forEach(function(e) {
+    dropZone.addEventListener(e, function(ev) { ev.preventDefault(); ev.stopPropagation(); dropZone.classList.remove('dragover'); });
+  });
+  dropZone.addEventListener('drop', function(ev) {
+    ev.preventDefault(); ev.stopPropagation();
+    dropZone.classList.remove('dragover');
+    var accepted = [];
+    for (var i = 0; i < ev.dataTransfer.files.length; i++) {
+      var f = ev.dataTransfer.files[i];
+      if (isAcceptedFile(f.name)) accepted.push(f);
+    }
+    if (accepted.length > 0) addAcceptedFilesToGroup(group, gid, accepted);
+  });
+
+  fileInput.addEventListener('change', function() {
+    var accepted = [];
+    for (var i = 0; i < fileInput.files.length; i++) {
+      var f = fileInput.files[i];
+      if (isAcceptedFile(f.name)) accepted.push(f);
+    }
+    if (accepted.length > 0) addAcceptedFilesToGroup(group, gid, accepted);
+  });
+
+  // Remove button
+  removeBtn.addEventListener('click', function() {
+    if (substrateGroups.length <= 1) return;
+    var idx = substrateGroups.indexOf(group);
+    if (idx >= 0) substrateGroups.splice(idx, 1);
+    var el = document.getElementById('sg-' + gid);
+    if (el) el.remove();
+    updateGroupTitles();
+    updateGenBtnState();
+  });
+
+  // Double-sided toggle visibility
+  function updateDblVis() {
+    var pt = printInput.value.toLowerCase();
+    var isDouble = /\b[1-9]\/[1-9]\b/.test(pt) || pt.indexOf('double') >= 0;
+    dblRow.style.display = isDouble ? 'flex' : 'none';
+    if (!isDouble) dblToggle.checked = false;
+  }
+  printInput.addEventListener('input', updateDblVis);
+  printInput.addEventListener('change', updateDblVis);
+  dblToggle.addEventListener('change', function() {
+    dblHint.textContent = dblToggle.checked ? 'Front duplicated to back' : 'Each file needs front & back';
+  });
+
+  // Custom scale toggle
+  scaleSelect.addEventListener('change', function() {
+    scaleCustom.style.display = this.value === 'custom' ? 'block' : 'none';
+  });
+}
+
+function updateGroupTitles() {
+  for (var i = 0; i < substrateGroups.length; i++) {
+    var g = substrateGroups[i];
+    var title = document.getElementById('sg-title-' + g.id);
+    if (title) title.textContent = 'Substrate ' + (i + 1);
+    var removeBtn = document.getElementById('sg-remove-' + g.id);
+    if (removeBtn) removeBtn.style.display = substrateGroups.length > 1 ? '' : 'none';
+  }
+}
+
+function updateGenBtnState() {
+  var genBtn = document.getElementById('gen-btn');
+  // Enable if any group has files
+  var anyFiles = substrateGroups.some(function(g) { return g.files.length > 0; });
+  genBtn.disabled = !anyFiles;
+}
+
+// ── Add accepted files to a specific group ──
+function addAcceptedFilesToGroup(group, gid, fileArray) {
+  var pdfs = [];
+  for (var i = 0; i < fileArray.length; i++) {
+    var f = fileArray[i];
+    if (isPdfFile(f.name)) {
+      pdfs.push(f);
+    } else if (isRasterFile(f.name)) {
+      group.pendingRasterQueue.push(f);
+    }
+  }
+  var pdfPromises = pdfs.map(function(f) {
+    return f.arrayBuffer().then(function(buf) {
+      var rawBytes = new Uint8Array(buf);
+      var hasOpw = false;
+      try {
+        var spots = findSpotColors(rawBytes);
+        for (var si = 0; si < spots.length; si++) {
+          if (spots[si].type === 'white' && /^opw(\d*)$/i.test(spots[si].rawName.replace(/[\s_-]/g, ''))) {
+            hasOpw = true; break;
+          }
+        }
+      } catch(e) { console.warn('Spot color scan failed:', e); }
+      var bufCopy = buf.slice ? buf.slice(0) : new ArrayBuffer(buf.byteLength);
+      if (!buf.slice) new Uint8Array(bufCopy).set(new Uint8Array(buf));
+      return pdfjsLib.getDocument({ data: bufCopy }).promise.then(function(pdf) {
+        var n = pdf.numPages;
+        for (var p = 1; p <= n; p++) {
+          group.files.push({ file: f, type: 'pdf', pdfPageNum: p, pdfTotalPages: n, hasOpw: hasOpw });
+        }
+        pdf.destroy();
+        return hasOpw;
+      });
+    }).catch(function(e) {
+      console.warn('PDF scan error for ' + f.name + ':', e);
+      group.files.push({ file: f, type: 'pdf', pdfPageNum: 1, pdfTotalPages: 1, hasOpw: false });
+      return false;
+    });
+  });
+  Promise.all(pdfPromises).then(function(results) {
+    var anyOpw = results.some(function(r) { return r; });
+    renderGroupFileList(group, gid);
+    if (anyOpw) { showOpwBackModal(group, gid); }
+  }).catch(function(e) {
+    console.error('Error reading PDFs:', e);
+    renderGroupFileList(group, gid);
+  });
+  processNextRasterInGroup(group, gid);
+}
+
+function processNextRasterInGroup(group, gid) {
+  if (group.processingRaster || group.pendingRasterQueue.length === 0) return;
+  group.processingRaster = true;
+  var f = group.pendingRasterQueue.shift();
+  processRasterFile(f).then(function(entry) {
+    if (entry) {
+      group.files.push(entry);
+      renderGroupFileList(group, gid);
+    }
+    group.processingRaster = false;
+    processNextRasterInGroup(group, gid);
+  });
+}
+
+function renderGroupFileList(group, gid) {
+  var fileList = document.getElementById('sg-flist-' + gid);
+  var fileItems = document.getElementById('sg-fitems-' + gid);
+  updateGenBtnState();
+  if (group.files.length === 0) { fileList.style.display = 'none'; return; }
+  fileItems.innerHTML = '';
+  group.files.forEach(function(entry, i) {
+    var li = document.createElement('li');
+    li.className = 'file-item';
+    li.draggable = true;
+    li.setAttribute('data-idx', i);
+    var sizeMB = (entry.file.size / (1024*1024)).toFixed(1);
+    var badge = entry.type === 'raster'
+      ? '<span class="badge badge-img">' + entry.rasterMeta.format + '</span>'
+      : '<span class="badge badge-pdf">PDF</span>';
+    var displayName = entry.file.name;
+    if (entry.type === 'pdf' && entry.pdfTotalPages > 1) {
+      displayName += ' (pg ' + entry.pdfPageNum + '/' + entry.pdfTotalPages + ')';
+    }
+    var infoText = sizeMB + ' MB';
+    if (entry.type === 'raster') {
+      infoText = entry.rasterMeta.trimW.toFixed(1) + '\" \u00d7 ' + entry.rasterMeta.trimH.toFixed(1) + '\" \u00b7 ' + entry.rasterMeta.dpi + ' DPI';
+    }
+    var savedQty = entry.perQty || '';
+    var savedScale = entry.perScale || '';
+    var wpBtnHtml = '';
+    if (!entry.isOpwBack) {
+      if (entry.whitePlateFile) {
+        var wpName = entry.whitePlateFile.name;
+        if (wpName.length > 16) wpName = wpName.substring(0, 13) + '\u2026';
+        wpBtnHtml = '<button class="wp-btn has-file" title="White plate: ' + entry.whitePlateFile.name + ' (click to change)" onclick="window._addWhitePlate(' + gid + ',' + i + ')">WP \u2713</button>';
+      } else {
+        wpBtnHtml = '<button class="wp-btn" title="Attach white plate file" onclick="window._addWhitePlate(' + gid + ',' + i + ')">+ WP</button>';
+      }
+    }
+    li.innerHTML = '<span class="drag-handle" title="Drag to reorder">\u2261</span>' +
+      '<span class="name">' + displayName + badge + '</span>' +
+      '<span class="info">' + infoText + '</span>' +
+      wpBtnHtml +
+      '<input type="text" class="qty-input" placeholder="Scale" title="Per-file scale override (e.g. 1/4, 65%)" value="' + savedScale + '" onchange="window._setFileScale(' + gid + ',' + i + ', this.value)" oninput="window._setFileScale(' + gid + ',' + i + ', this.value)" style="width:56px;">' +
+      '<input type="text" class="qty-input" placeholder="Qty" value="' + savedQty + '" onchange="window._setFileQty(' + gid + ',' + i + ', this.value)" oninput="window._setFileQty(' + gid + ',' + i + ', this.value)">' +
+      '<button class="remove" onclick="window._removeFile(' + gid + ',' + i + ')">&#10005;</button>';
+
+    // Drag-and-drop reordering
+    (function(idx) {
+    li.addEventListener('dragstart', function(ev) {
+      ev.dataTransfer.effectAllowed = 'move';
+      ev.dataTransfer.setData('text/plain', idx.toString());
+      li.style.opacity = '0.4';
+    });
+    li.addEventListener('dragend', function() { li.style.opacity = '1'; });
+    li.addEventListener('dragover', function(ev) { ev.preventDefault(); ev.dataTransfer.dropEffect = 'move'; li.classList.add('drag-over'); });
+    li.addEventListener('dragleave', function() { li.classList.remove('drag-over'); });
+    li.addEventListener('drop', function(ev) {
+      ev.preventDefault();
+      li.classList.remove('drag-over');
+      var fromIdx = parseInt(ev.dataTransfer.getData('text/plain'), 10);
+      var toIdx = idx;
+      if (fromIdx !== toIdx && !isNaN(fromIdx) && !isNaN(toIdx)) {
+        var moved = group.files.splice(fromIdx, 1)[0];
+        group.files.splice(toIdx, 0, moved);
+        renderGroupFileList(group, gid);
+      }
+    });
+    })(i);
+
+    fileItems.appendChild(li);
+  });
+  fileList.style.display = 'block';
+}
+
+// Global helpers that take group id
+function _findGroup(gid) {
+  for (var i = 0; i < substrateGroups.length; i++) {
+    if (substrateGroups[i].id === gid) return substrateGroups[i];
+  }
+  return null;
+}
+window._removeFile = function(gid, idx) {
+  var g = _findGroup(gid);
+  if (g) { g.files.splice(idx, 1); renderGroupFileList(g, gid); }
+};
+window._setFileQty = function(gid, idx, val) {
+  var g = _findGroup(gid);
+  if (g && g.files[idx]) g.files[idx].perQty = val.trim();
+};
+window._setFileScale = function(gid, idx, val) {
+  var g = _findGroup(gid);
+  if (g && g.files[idx]) g.files[idx].perScale = val.trim();
+};
+
+// White plate file input (shared, routes to correct group/file)
+var _wpFileInput = document.createElement('input');
+_wpFileInput.type = 'file';
+_wpFileInput.accept = '.tif,.tiff,.jpg,.jpeg,.png,.pdf,.ai';
+_wpFileInput.style.display = 'none';
+document.body.appendChild(_wpFileInput);
+var _wpTargetGid = -1, _wpTargetIdx = -1;
+window._addWhitePlate = function(gid, idx) {
+  _wpTargetGid = gid;
+  _wpTargetIdx = idx;
+  _wpFileInput.value = '';
+  _wpFileInput.click();
+};
+_wpFileInput.addEventListener('change', function() {
+  if (_wpFileInput.files.length && _wpTargetGid >= 0) {
+    var g = _findGroup(_wpTargetGid);
+    if (g && g.files[_wpTargetIdx]) {
+      g.files[_wpTargetIdx].whitePlateFile = _wpFileInput.files[0];
+      renderGroupFileList(g, _wpTargetGid);
+    }
+  }
+  _wpTargetGid = -1;
+  _wpTargetIdx = -1;
 });
 
-// Custom scale toggle
-document.getElementById('scale_str').addEventListener('change', function() {
-  document.getElementById('scale_custom').style.display = this.value === 'custom' ? 'block' : 'none';
+// Add substrate button
+document.getElementById('add-substrate-btn').addEventListener('click', function() {
+  createSubstrateGroup();
+  // Scroll new group into view
+  var last = substrateGroups[substrateGroups.length - 1];
+  var el = document.getElementById('sg-' + last.id);
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
 });
 
-// ── Collected files ──
-// Each entry: { file, type:'pdf'|'raster', rasterMeta?: { dpi, pixW, pixH, widthIn, heightIn, bleed, trimW, trimH, format, imgDataUrl } }
-var allFiles = [];
+// ── OPW Backside pairing modal (group-aware) ──
+var _opwBackFile = null;
+var _opwBackGroup = null;
+var _opwBackGid = -1;
+
+function showOpwBackModal(group, gid) {
+  _opwBackFile = null;
+  _opwBackGroup = group;
+  _opwBackGid = gid;
+  var modal = document.getElementById('opw-back-modal');
+  var fnDiv = document.getElementById('opw-back-filename');
+  var contBtn = document.getElementById('opw-back-continue');
+  var inp = document.getElementById('opw-back-input');
+  fnDiv.style.display = 'none';
+  fnDiv.textContent = '';
+  contBtn.disabled = true;
+  inp.value = '';
+  modal.classList.add('active');
+}
+
+(function() {
+  var modal = document.getElementById('opw-back-modal');
+  var inp = document.getElementById('opw-back-input');
+  var fnDiv = document.getElementById('opw-back-filename');
+  var contBtn = document.getElementById('opw-back-continue');
+  var skipBtn = document.getElementById('opw-back-skip');
+  var dropArea = document.getElementById('opw-back-drop');
+
+  function handleBackFile(file) {
+    if (!file) return;
+    _opwBackFile = file;
+    fnDiv.textContent = '✓ ' + file.name;
+    fnDiv.style.display = 'block';
+    contBtn.disabled = false;
+  }
+
+  inp.addEventListener('change', function() { if (inp.files.length) handleBackFile(inp.files[0]); });
+
+  ['dragenter','dragover'].forEach(function(e) {
+    dropArea.addEventListener(e, function(ev) { ev.preventDefault(); ev.stopPropagation(); dropArea.style.borderColor = '#0071e3'; dropArea.style.background = 'rgba(0,113,227,0.04)'; });
+  });
+  ['dragleave','drop'].forEach(function(e) {
+    dropArea.addEventListener(e, function(ev) { ev.preventDefault(); ev.stopPropagation(); dropArea.style.borderColor = '#d2d2d7'; dropArea.style.background = ''; });
+  });
+  dropArea.addEventListener('drop', function(ev) {
+    if (ev.dataTransfer.files.length) handleBackFile(ev.dataTransfer.files[0]);
+  });
+
+  skipBtn.addEventListener('click', function() {
+    modal.classList.remove('active');
+    _opwBackFile = null;
+    _opwBackGroup = null;
+  });
+
+  contBtn.addEventListener('click', function() {
+    modal.classList.remove('active');
+    if (!_opwBackFile || !_opwBackGroup) return;
+    var backFile = _opwBackFile;
+    var group = _opwBackGroup;
+    var gid = _opwBackGid;
+    _opwBackFile = null;
+    _opwBackGroup = null;
+
+    function doInterleave(backEntry) {
+      var newFiles = [];
+      for (var i = 0; i < group.files.length; i++) {
+        newFiles.push(group.files[i]);
+        if (group.files[i].hasOpw) {
+          var clone = {};
+          for (var k in backEntry) { if (backEntry.hasOwnProperty(k)) clone[k] = backEntry[k]; }
+          newFiles.push(clone);
+        }
+      }
+      group.files.length = 0;
+      for (var j = 0; j < newFiles.length; j++) group.files.push(newFiles[j]);
+      renderGroupFileList(group, gid);
+    }
+
+    if (isPdfFile(backFile.name)) {
+      backFile.arrayBuffer().then(function(buf) {
+        return pdfjsLib.getDocument({ data: buf }).promise.then(function(pdf) {
+          var n = pdf.numPages;
+          pdf.destroy();
+          var backEntry = { file: backFile, type: 'pdf', pdfPageNum: 1, pdfTotalPages: n, isOpwBack: true };
+          doInterleave(backEntry);
+        });
+      }).catch(function(e) { console.error('Back PDF error:', e); });
+    } else if (isRasterFile(backFile.name)) {
+      processRasterFile(backFile).then(function(entry) {
+        if (entry) {
+          entry.isOpwBack = true;
+          doInterleave(entry);
+        }
+      }).catch(function(e) { console.error('Back raster error:', e); });
+    }
+  });
+})();
+
+// Create the first group on page load
+createSubstrateGroup();
 
 // ── Accepted extensions ──
 var RASTER_EXTS = ['.tif', '.tiff', '.jpg', '.jpeg', '.png'];
@@ -690,11 +1135,6 @@ function isPdfFile(name) { var lower = name.toLowerCase(); return lower.endsWith
 function isAcceptedFile(name) { return isPdfFile(name) || isRasterFile(name); }
 
 // ── DOM refs ──
-var dropZone = document.getElementById('pdf-drop');
-var fileInput = document.getElementById('pdf-input');
-var fileList = document.getElementById('file-list');
-var fileItems = document.getElementById('file-items');
-var genBtn = document.getElementById('gen-btn');
 var progressOverlay = document.getElementById('progress');
 var progressBar = document.getElementById('progress-bar');
 var progressStatus = document.getElementById('progress-status');
@@ -1231,290 +1671,6 @@ function showRasterModal(file, pixW, pixH, detectedDpi, imgEl) {
     };
   });
 }
-
-// ── File handling (accepts PDF + raster) ──
-var pendingRasterQueue = [];
-var processingRaster = false;
-
-function addAcceptedFiles(fileArray) {
-  var pdfs = [];
-  for (var i = 0; i < fileArray.length; i++) {
-    var f = fileArray[i];
-    if (isPdfFile(f.name)) {
-      pdfs.push(f);
-    } else if (isRasterFile(f.name)) {
-      pendingRasterQueue.push(f);
-    }
-  }
-  // Expand multipage PDFs into per-page entries
-  var pdfPromises = pdfs.map(function(f) {
-    return f.arrayBuffer().then(function(buf) {
-      var rawBytes = new Uint8Array(buf);
-      var hasOpw = false;
-      try {
-        var spots = findSpotColors(rawBytes);
-        for (var si = 0; si < spots.length; si++) {
-          // Only trigger OPW workflow for strictly "OPW" named spots, not generic white inks
-          if (spots[si].type === 'white' && /^opw(\d*)$/i.test(spots[si].rawName.replace(/[\s_-]/g, ''))) {
-            hasOpw = true; break;
-          }
-        }
-      } catch(e) { console.warn('Spot color scan failed:', e); }
-      // Copy buffer before PDF.js detaches it
-      var bufCopy = buf.slice ? buf.slice(0) : new ArrayBuffer(buf.byteLength);
-      if (!buf.slice) new Uint8Array(bufCopy).set(new Uint8Array(buf));
-      return pdfjsLib.getDocument({ data: bufCopy }).promise.then(function(pdf) {
-        var n = pdf.numPages;
-        for (var p = 1; p <= n; p++) {
-          allFiles.push({ file: f, type: 'pdf', pdfPageNum: p, pdfTotalPages: n, hasOpw: hasOpw });
-        }
-        pdf.destroy();
-        return hasOpw;
-      });
-    }).catch(function(e) {
-      // If a single PDF fails, don't block the rest — just add it without OPW
-      console.warn('PDF scan error for ' + f.name + ':', e);
-      allFiles.push({ file: f, type: 'pdf', pdfPageNum: 1, pdfTotalPages: 1, hasOpw: false });
-      return false;
-    });
-  });
-  Promise.all(pdfPromises).then(function(results) {
-    var anyOpw = results.some(function(r) { return r; });
-    renderFileList();
-    if (anyOpw) { showOpwBackModal(); }
-  }).catch(function(e) {
-    console.error('Error reading PDFs:', e);
-    renderFileList();
-  });
-  processNextRaster();
-}
-
-function processNextRaster() {
-  if (processingRaster || pendingRasterQueue.length === 0) return;
-  processingRaster = true;
-  var f = pendingRasterQueue.shift();
-  processRasterFile(f).then(function(entry) {
-    if (entry) {
-      allFiles.push(entry);
-      renderFileList();
-    }
-    processingRaster = false;
-    processNextRaster();
-  });
-}
-
-// ── OPW Backside pairing modal ──
-var _opwBackFile = null;
-
-function showOpwBackModal() {
-  _opwBackFile = null;
-  var modal = document.getElementById('opw-back-modal');
-  var fnDiv = document.getElementById('opw-back-filename');
-  var contBtn = document.getElementById('opw-back-continue');
-  var inp = document.getElementById('opw-back-input');
-  fnDiv.style.display = 'none';
-  fnDiv.textContent = '';
-  contBtn.disabled = true;
-  inp.value = '';
-  modal.classList.add('active');
-}
-
-(function() {
-  var modal = document.getElementById('opw-back-modal');
-  var inp = document.getElementById('opw-back-input');
-  var fnDiv = document.getElementById('opw-back-filename');
-  var contBtn = document.getElementById('opw-back-continue');
-  var skipBtn = document.getElementById('opw-back-skip');
-  var dropArea = document.getElementById('opw-back-drop');
-
-  function handleBackFile(file) {
-    if (!file) return;
-    _opwBackFile = file;
-    fnDiv.textContent = '✓ ' + file.name;
-    fnDiv.style.display = 'block';
-    contBtn.disabled = false;
-  }
-
-  inp.addEventListener('change', function() { if (inp.files.length) handleBackFile(inp.files[0]); });
-
-  ['dragenter','dragover'].forEach(function(e) {
-    dropArea.addEventListener(e, function(ev) { ev.preventDefault(); ev.stopPropagation(); dropArea.style.borderColor = '#0071e3'; dropArea.style.background = 'rgba(0,113,227,0.04)'; });
-  });
-  ['dragleave','drop'].forEach(function(e) {
-    dropArea.addEventListener(e, function(ev) { ev.preventDefault(); ev.stopPropagation(); dropArea.style.borderColor = '#d2d2d7'; dropArea.style.background = ''; });
-  });
-  dropArea.addEventListener('drop', function(ev) {
-    if (ev.dataTransfer.files.length) handleBackFile(ev.dataTransfer.files[0]);
-  });
-
-  skipBtn.addEventListener('click', function() {
-    modal.classList.remove('active');
-    _opwBackFile = null;
-  });
-
-  contBtn.addEventListener('click', function() {
-    modal.classList.remove('active');
-    if (!_opwBackFile) return;
-    var backFile = _opwBackFile;
-    _opwBackFile = null;
-
-    function doInterleave(backEntry) {
-      var newFiles = [];
-      for (var i = 0; i < allFiles.length; i++) {
-        newFiles.push(allFiles[i]);
-        if (allFiles[i].hasOpw) {
-          // Clone backEntry so each insertion is independent
-          var clone = {};
-          for (var k in backEntry) { if (backEntry.hasOwnProperty(k)) clone[k] = backEntry[k]; }
-          newFiles.push(clone);
-        }
-      }
-      allFiles.length = 0;
-      for (var j = 0; j < newFiles.length; j++) allFiles.push(newFiles[j]);
-      renderFileList();
-    }
-
-    if (isPdfFile(backFile.name)) {
-      // PDF back — expand pages (use page 1)
-      backFile.arrayBuffer().then(function(buf) {
-        return pdfjsLib.getDocument({ data: buf }).promise.then(function(pdf) {
-          var n = pdf.numPages;
-          pdf.destroy();
-          var backEntry = { file: backFile, type: 'pdf', pdfPageNum: 1, pdfTotalPages: n, isOpwBack: true };
-          doInterleave(backEntry);
-        });
-      }).catch(function(e) { console.error('Back PDF error:', e); });
-    } else if (isRasterFile(backFile.name)) {
-      // Raster back — process through raster pipeline first so rasterMeta is populated
-      processRasterFile(backFile).then(function(entry) {
-        if (entry) {
-          entry.isOpwBack = true;
-          doInterleave(entry);
-        }
-      }).catch(function(e) { console.error('Back raster error:', e); });
-    }
-  });
-})();
-
-// ── File handling events ──
-dropZone.addEventListener('click', function(ev) {
-  ev.stopPropagation();
-  fileInput.value = '';
-  fileInput.click();
-});
-['dragenter','dragover'].forEach(function(e) { dropZone.addEventListener(e, function(ev) { ev.preventDefault(); ev.stopPropagation(); dropZone.classList.add('dragover'); }); });
-['dragleave'].forEach(function(e) { dropZone.addEventListener(e, function(ev) { ev.preventDefault(); ev.stopPropagation(); dropZone.classList.remove('dragover'); }); });
-
-dropZone.addEventListener('drop', function(ev) {
-  ev.preventDefault();
-  ev.stopPropagation();
-  dropZone.classList.remove('dragover');
-  var accepted = [];
-  for (var i = 0; i < ev.dataTransfer.files.length; i++) {
-    var f = ev.dataTransfer.files[i];
-    if (isAcceptedFile(f.name)) accepted.push(f);
-  }
-  if (accepted.length > 0) addAcceptedFiles(accepted);
-});
-
-fileInput.addEventListener('change', function() {
-  var accepted = [];
-  for (var i = 0; i < fileInput.files.length; i++) {
-    var f = fileInput.files[i];
-    if (isAcceptedFile(f.name)) accepted.push(f);
-  }
-  if (accepted.length > 0) addAcceptedFiles(accepted);
-});
-
-function renderFileList() {
-  genBtn.disabled = allFiles.length === 0;
-  if (allFiles.length === 0) { fileList.style.display = 'none'; return; }
-  fileItems.innerHTML = '';
-  allFiles.forEach(function(entry, i) {
-    var li = document.createElement('li');
-    li.className = 'file-item';
-    li.draggable = true;
-    li.setAttribute('data-idx', i);
-    var sizeMB = (entry.file.size / (1024*1024)).toFixed(1);
-    var badge = entry.type === 'raster'
-      ? '<span class="badge badge-img">' + entry.rasterMeta.format + '</span>'
-      : '<span class="badge badge-pdf">PDF</span>';
-    var displayName = entry.file.name;
-    if (entry.type === 'pdf' && entry.pdfTotalPages > 1) {
-      displayName += ' (pg ' + entry.pdfPageNum + '/' + entry.pdfTotalPages + ')';
-    }
-    var infoText = sizeMB + ' MB';
-    if (entry.type === 'raster') {
-      infoText = entry.rasterMeta.trimW.toFixed(1) + '" \u00d7 ' + entry.rasterMeta.trimH.toFixed(1) + '" \u00b7 ' + entry.rasterMeta.dpi + ' DPI';
-    }
-    var savedQty = entry.perQty || '';
-    var savedScale = entry.perScale || '';
-    var wpBtnHtml = '';
-    if (!entry.isOpwBack) {
-      if (entry.whitePlateFile) {
-        var wpName = entry.whitePlateFile.name;
-        if (wpName.length > 16) wpName = wpName.substring(0, 13) + '\u2026';
-        wpBtnHtml = '<button class="wp-btn has-file" title="White plate: ' + entry.whitePlateFile.name + ' (click to change)" onclick="window._addWhitePlate(' + i + ')">WP \u2713</button>';
-      } else {
-        wpBtnHtml = '<button class="wp-btn" title="Attach white plate file" onclick="window._addWhitePlate(' + i + ')">+ WP</button>';
-      }
-    }
-    li.innerHTML = '<span class="drag-handle" title="Drag to reorder">\u2261</span>' +
-      '<span class="name">' + displayName + badge + '</span>' +
-      '<span class="info">' + infoText + '</span>' +
-      wpBtnHtml +
-      '<input type="text" class="qty-input" placeholder="Scale" title="Per-file scale override (e.g. 1/4, 65%)" value="' + savedScale + '" data-file-idx="' + i + '" onchange="window._setFileScale(' + i + ', this.value)" oninput="window._setFileScale(' + i + ', this.value)" style="width:56px;">' +
-      '<input type="text" class="qty-input" placeholder="Qty" value="' + savedQty + '" data-file-idx="' + i + '" onchange="window._setFileQty(' + i + ', this.value)" oninput="window._setFileQty(' + i + ', this.value)">' +
-      '<button class="remove" onclick="window._removeFile(' + i + ')">&#10005;</button>';
-
-    // Drag-and-drop reordering
-    li.addEventListener('dragstart', function(ev) {
-      ev.dataTransfer.effectAllowed = 'move';
-      ev.dataTransfer.setData('text/plain', i.toString());
-      li.style.opacity = '0.4';
-    });
-    li.addEventListener('dragend', function() { li.style.opacity = '1'; });
-    li.addEventListener('dragover', function(ev) { ev.preventDefault(); ev.dataTransfer.dropEffect = 'move'; li.classList.add('drag-over'); });
-    li.addEventListener('dragleave', function() { li.classList.remove('drag-over'); });
-    li.addEventListener('drop', function(ev) {
-      ev.preventDefault();
-      li.classList.remove('drag-over');
-      var fromIdx = parseInt(ev.dataTransfer.getData('text/plain'), 10);
-      var toIdx = parseInt(li.getAttribute('data-idx'), 10);
-      if (fromIdx !== toIdx && !isNaN(fromIdx) && !isNaN(toIdx)) {
-        var moved = allFiles.splice(fromIdx, 1)[0];
-        allFiles.splice(toIdx, 0, moved);
-        renderFileList();
-      }
-    });
-
-    fileItems.appendChild(li);
-  });
-  fileList.style.display = 'block';
-}
-window._removeFile = function(idx) { allFiles.splice(idx, 1); renderFileList(); };
-window._setFileQty = function(idx, val) { if (allFiles[idx]) allFiles[idx].perQty = val.trim(); };
-window._setFileScale = function(idx, val) { if (allFiles[idx]) allFiles[idx].perScale = val.trim(); };
-
-// ── White plate file attachment per file ──
-var _wpFileInput = document.createElement('input');
-_wpFileInput.type = 'file';
-_wpFileInput.accept = '.tif,.tiff,.jpg,.jpeg,.png,.pdf,.ai';
-_wpFileInput.style.display = 'none';
-document.body.appendChild(_wpFileInput);
-var _wpTargetIdx = -1;
-window._addWhitePlate = function(idx) {
-  _wpTargetIdx = idx;
-  _wpFileInput.value = '';
-  _wpFileInput.click();
-};
-_wpFileInput.addEventListener('change', function() {
-  if (_wpFileInput.files.length && _wpTargetIdx >= 0 && allFiles[_wpTargetIdx]) {
-    allFiles[_wpTargetIdx].whitePlateFile = _wpFileInput.files[0];
-    renderFileList();
-  }
-  _wpTargetIdx = -1;
-});
 
 // ── Helper functions ──
 
@@ -3603,7 +3759,7 @@ function drawProofPage(doc, frontImg, opts) {
 }
 
 // ── Wire up buttons ──
-genBtn.addEventListener('click', function() { generateProof(); });
+document.getElementById('gen-btn').addEventListener('click', function() { generateProof(); });
 document.getElementById('reset-btn').addEventListener('click', function() { resetForm(); });
 document.getElementById('edit-btn').addEventListener('click', function() {
   document.getElementById('result-section').classList.remove('active');
@@ -3807,26 +3963,18 @@ function collectAllResolutions(pagePlan, scale) {
   });
 }
 
-// ── Main generate function ──
+// ── Main generate function (multi-substrate) ──
 window.generateProof = function() {
   // Reset spot color classification cache for this generation run
   _spotClassificationCache = {};
   var clientName = document.getElementById('client_name').value.trim();
   if (!clientName) { alert('Please enter a client name.'); return; }
-  if (allFiles.length === 0) { alert('Please drop at least one file.'); return; }
+
+  // Collect groups that have files
+  var activeGroups = substrateGroups.filter(function(g) { return g.files.length > 0; });
+  if (activeGroups.length === 0) { alert('Please drop at least one file.'); return; }
 
   var jobNumber = document.getElementById('job_number').value.trim();
-  var qty = document.getElementById('qty').value.trim();
-  var substrate = document.getElementById('substrate').value.trim();
-  var printType = document.getElementById('print_type').value.trim() || '4/0';
-  var scale = document.getElementById('scale_str').value;
-  if (scale === 'custom') {
-    var pct = parseFloat(document.getElementById('scale_custom').value);
-    if (!pct || pct <= 0 || pct > 100) { alert('Please enter a valid scale percentage (1–100).'); return; }
-    scale = (100 / pct).toString();
-  }
-  var finishing = document.getElementById('finishing_notes').value.trim();
-  var extraNotes = document.getElementById('extra_notes').value.trim();
   var branded = document.getElementById('branded_toggle').checked;
   var date = getToday();
 
@@ -3836,48 +3984,66 @@ window.generateProof = function() {
   progressStatus.textContent = 'Reading files\u2026';
   progressDetail.textContent = 'Counting pages';
 
-  // Build a unified page plan from all files (PDFs expand to pages, rasters are 1 each)
+  // Build unified page plan across all groups
+  // Each page plan item carries its group's metadata
   var pagePlan = [];
-  var fileIdx = 0;
+  var groupIdx = 0;
+  var fileIdxInGroup = 0;
 
-  function readNextFile() {
-    if (fileIdx >= allFiles.length) {
+  function readNextFileFromGroups() {
+    if (groupIdx >= activeGroups.length) {
       processPages();
       return;
     }
-    var entry = allFiles[fileIdx];
+    var group = activeGroups[groupIdx];
+    var gid = group.id;
+    if (fileIdxInGroup >= group.files.length) {
+      groupIdx++;
+      fileIdxInGroup = 0;
+      readNextFileFromGroups();
+      return;
+    }
+    var entry = group.files[fileIdxInGroup];
+
+    // Read per-group settings
+    var gQty = document.getElementById('sg-qty-' + gid).value.trim();
+    var gSubstrate = document.getElementById('sg-substrate-' + gid).value.trim();
+    var gPrintType = document.getElementById('sg-print-' + gid).value.trim() || '4/0';
+    var gScale = document.getElementById('sg-scale-' + gid).value;
+    if (gScale === 'custom') {
+      var pct = parseFloat(document.getElementById('sg-scalecustom-' + gid).value);
+      if (pct && pct > 0) { gScale = (100 / pct).toString(); }
+      else { gScale = '1'; }
+    }
+    var gFinishing = document.getElementById('sg-finishing-' + gid).value.trim();
+    var gNotes = document.getElementById('sg-notes-' + gid).value.trim();
+    var gDblSame = document.getElementById('sg-dblsame-' + gid).checked;
+
+    var groupMeta = {
+      qty: gQty, substrate: gSubstrate, printType: gPrintType,
+      scale: gScale, finishing: gFinishing, notes: gNotes, dblSame: gDblSame,
+      groupLabel: activeGroups.length > 1 ? (gSubstrate || ('Substrate ' + (groupIdx + 1))) : ''
+    };
+
     if (entry.type === 'raster') {
-      // Raster files are already processed — add directly
       var rm = entry.rasterMeta;
       pagePlan.push({
-        type: 'raster',
-        filename: entry.file.name,
-        totalPages: 1,
-        pageNum: 1,
-        rasterMeta: rm,
-        perQty: entry.perQty || '',
-        perScale: entry.perScale || '',
-        isOpwBack: entry.isOpwBack || false,
-        whitePlateFile: entry.whitePlateFile || null
+        type: 'raster', filename: entry.file.name, totalPages: 1, pageNum: 1,
+        rasterMeta: rm, perQty: entry.perQty || '', perScale: entry.perScale || '',
+        isOpwBack: entry.isOpwBack || false, whitePlateFile: entry.whitePlateFile || null,
+        _groupMeta: groupMeta
       });
-      fileIdx++;
-      readNextFile();
     } else {
-      // PDF: pages are pre-expanded, use stored page number
       pagePlan.push({
-        type: 'pdf',
-        file: entry.file,
-        pageNum: entry.pdfPageNum || 1,
-        filename: entry.file.name,
-        totalPages: entry.pdfTotalPages || 1,
-        perQty: entry.perQty || '',
-        perScale: entry.perScale || '',
-        isOpwBack: entry.isOpwBack || false,
-        whitePlateFile: entry.whitePlateFile || null
+        type: 'pdf', file: entry.file, pageNum: entry.pdfPageNum || 1,
+        filename: entry.file.name, totalPages: entry.pdfTotalPages || 1,
+        perQty: entry.perQty || '', perScale: entry.perScale || '',
+        isOpwBack: entry.isOpwBack || false, whitePlateFile: entry.whitePlateFile || null,
+        _groupMeta: groupMeta
       });
-      fileIdx++;
-      readNextFile();
     }
+    fileIdxInGroup++;
+    readNextFileFromGroups();
   }
 
   function processPages() {
@@ -3887,38 +4053,31 @@ window.generateProof = function() {
       return;
     }
 
+    // Use the first group's scale for resolution check (best effort)
+    var firstScale = pagePlan[0]._groupMeta.scale;
+
     // ── Resolution check before generating ──
     progressDetail.textContent = 'Scanning image resolutions\u2026';
-    collectAllResolutions(pagePlan, scale).then(function(allRes) {
-      // Find items below 150 DPI (the LPI threshold)
+    collectAllResolutions(pagePlan, firstScale).then(function(allRes) {
       var lowRes = allRes.filter(function(r) { return r.dpi < 150; });
       if (lowRes.length > 0) {
-        // Hide progress while showing the modal
         progressOverlay.classList.remove('active');
         showResolutionWarning(lowRes).then(function(choice) {
-          if (choice === 'stop') {
-            // Cancel — back to main screen
-            return;
-          }
-          // Resume progress
+          if (choice === 'stop') { return; }
           progressOverlay.classList.add('active');
-          // 'continue' = add resolution note to proof, 'bypass' = hide all resolution info
           var resNote = (choice === 'continue') ? buildResNote(allRes) : null;
           var hideRes = (choice === 'bypass');
           buildSheets(resNote, hideRes);
         });
       } else {
-        // All resolutions OK — proceed without warning
         buildSheets(null);
       }
     }).catch(function(e) {
       console.error('Resolution scan error:', e);
-      // Don't block generation if scan fails
       buildSheets(null);
     });
 
     function buildResNote(allRes) {
-      // Compute the DPI range across all images
       if (allRes.length === 0) return null;
       var dpis = allRes.map(function(r) { return r.dpi; });
       var minDpi = Math.min.apply(null, dpis);
@@ -3930,76 +4089,28 @@ window.generateProof = function() {
     }
 
     function buildSheets(resNote, hideRes) {
-
-    // Detect double-sided from print type
-    var pt = printType.toLowerCase();
-    var isDoubleSided = /\b[1-9]\/[1-9]\b/.test(pt) || pt.indexOf('double') >= 0;
-    var dblSame = document.getElementById('dbl_same_toggle').checked;
-
-    // Odd page count warning for double-sided (not same-art)
-    if (isDoubleSided && !dblSame && pagePlan.length % 2 !== 0) {
-      progressOverlay.classList.remove('active');
-      // Show the warning modal
-      var oddModal = document.getElementById('odd-page-modal');
-      document.getElementById('odd-page-count').textContent = pagePlan.length;
-      var oddList = document.getElementById('odd-page-list');
-      oddList.innerHTML = '';
-      for (var oi = 0; oi < pagePlan.length; oi += 2) {
-        var row = document.createElement('div');
-        row.style.cssText = 'padding:8px 12px;font-size:13px;border-bottom:1px solid #f5f5f5;display:flex;justify-content:space-between;';
-        var frontName = pagePlan[oi].filename;
-        if (pagePlan[oi].totalPages > 1) frontName += ' (pg ' + pagePlan[oi].pageNum + ')';
-        var backName = (oi + 1 < pagePlan.length)
-          ? (function() { var b = pagePlan[oi+1]; var n = b.filename; if (b.totalPages > 1) n += ' (pg ' + b.pageNum + ')'; return n; })()
-          : '<em style="color:#dc2626;">No back page</em>';
-        row.innerHTML = '<span><strong>Sheet ' + (Math.floor(oi/2)+1) + ':</strong> ' + frontName + '</span><span> ↔ ' + backName + '</span>';
-        oddList.appendChild(row);
-      }
-      oddModal.classList.add('active');
-      return new Promise(function(resolve) {
-        document.getElementById('odd-cancel').onclick = function() {
-          oddModal.classList.remove('active');
-        };
-        document.getElementById('odd-continue').onclick = function() {
-          oddModal.classList.remove('active');
-          progressOverlay.classList.add('active');
-          doBuildSheets(resNote, hideRes);
-        };
-      });
-    }
-    doBuildSheets(resNote, hideRes);
-    }
-
-    function doBuildSheets(resNote, hideRes) {
-
-    var pt = printType.toLowerCase();
-    var isDoubleSided = /\b[1-9]\/[1-9]\b/.test(pt) || pt.indexOf('double') >= 0;
-    var dblSame = document.getElementById('dbl_same_toggle').checked;
-
-    // Build sheet plan — pair consecutive pages for double-sided jobs
-    // Also auto-pair OPW fronts with their interleaved backs regardless of print type
+    // Build sheet plan — group pages by their group context
+    // Process pagePlan sequentially: within each run of the same group, apply that group's double-sided pairing
     var sheetPlan = [];
-    if (isDoubleSided && dblSame) {
-      // Same art both sides: each page becomes its own sheet with front duplicated to back
-      pagePlan.forEach(function(item) {
-        sheetPlan.push({ front: item, back: item, sameArt: true });
-      });
-    } else if (isDoubleSided) {
-      for (var i = 0; i < pagePlan.length; i += 2) {
-        sheetPlan.push({
-          front: pagePlan[i],
-          back: (i + 1 < pagePlan.length) ? pagePlan[i + 1] : null
-        });
-      }
-    } else {
-      // Single-sided — but auto-pair OPW fronts with their interleaved backs
-      for (var i = 0; i < pagePlan.length; i++) {
-        if (i + 1 < pagePlan.length && pagePlan[i + 1].isOpwBack) {
-          sheetPlan.push({ front: pagePlan[i], back: pagePlan[i + 1] });
-          i++; // skip the back entry
-        } else {
-          sheetPlan.push({ front: pagePlan[i], back: null });
-        }
+    var i = 0;
+    while (i < pagePlan.length) {
+      var gm = pagePlan[i]._groupMeta;
+      var pt = gm.printType.toLowerCase();
+      var isDoubleSided = /\b[1-9]\/[1-9]\b/.test(pt) || pt.indexOf('double') >= 0;
+
+      if (isDoubleSided && gm.dblSame) {
+        sheetPlan.push({ front: pagePlan[i], back: pagePlan[i], sameArt: true });
+        i++;
+      } else if (isDoubleSided && i + 1 < pagePlan.length && pagePlan[i+1]._groupMeta === gm) {
+        sheetPlan.push({ front: pagePlan[i], back: pagePlan[i+1] });
+        i += 2;
+      } else if (!isDoubleSided && i + 1 < pagePlan.length && pagePlan[i+1].isOpwBack && pagePlan[i+1]._groupMeta === gm) {
+        sheetPlan.push({ front: pagePlan[i], back: pagePlan[i+1] });
+        i += 2;
+      } else {
+        sheetPlan.push({ front: pagePlan[i], back: isDoubleSided && i + 1 < pagePlan.length ? pagePlan[i+1] : null });
+        if (isDoubleSided && i + 1 < pagePlan.length) i += 2;
+        else i++;
       }
     }
 
@@ -4023,7 +4134,6 @@ window.generateProof = function() {
           spotColors: [],
           rasterInfo: { dpi: rm.dpi, pixW: rm.pixW, pixH: rm.pixH, bleed: rm.bleed }
         };
-        // Check for per-file white plate attachment
         if (item.whitePlateFile) {
           return loadWhitePlateFile(item.whitePlateFile).then(function(thumb) {
             if (thumb) {
@@ -4036,10 +4146,8 @@ window.generateProof = function() {
         return Promise.resolve(rasterResult);
       } else {
         return renderPdfPageToImage(item.file, item.pageNum).then(function(result) {
-          // If there are unclassified spot colors, show the classification modal
           var classifyPromise;
           if (result.spotColors && result.spotColors.some(function(sc) { return sc.needsClassification; })) {
-            // Pause progress overlay while showing modal
             progressOverlay.classList.remove('active');
             classifyPromise = showSpotColorClassification(result.spotColors).then(function(classified) {
               progressOverlay.classList.add('active');
@@ -4050,12 +4158,10 @@ window.generateProof = function() {
           }
 
           return classifyPromise.then(function() {
-            // Priority 1: per-file white plate attachment from file list WP button
             if (item.whitePlateFile) {
               return loadWhitePlateFile(item.whitePlateFile).then(function(thumb) {
                 if (thumb) {
                   thumb.spotName = item.whitePlateFile.name;
-                  // Try to find a white spot name for a better label
                   if (result.spotColors) {
                     result.spotColors.forEach(function(sc) {
                       if (sc.type === 'white') thumb.spotName = sc.rawName;
@@ -4068,7 +4174,6 @@ window.generateProof = function() {
               });
             }
 
-            // Priority 2: white plate file(s) via the classification modal
             var whiteSpotKey = null;
             if (result.spotColors) {
               result.spotColors.forEach(function(sc) {
@@ -4079,13 +4184,11 @@ window.generateProof = function() {
             var hasUserWpFile = cached && cached.wpFiles && cached.wpFileIndex < cached.wpFiles.length;
 
             if (hasUserWpFile) {
-              // Use the next user-provided white plate file (matched to page sequence)
               var wpFile = cached.wpFiles[cached.wpFileIndex];
               cached.wpFileIndex++;
               return loadWhitePlateFile(wpFile).then(function(thumb) {
                 if (thumb) {
                   thumb.spotName = whiteSpotKey || 'OPW';
-                  // Find the raw spot name for label
                   result.spotColors.forEach(function(sc) {
                     if (sc.type === 'white') thumb.spotName = sc.rawName;
                   });
@@ -4096,7 +4199,6 @@ window.generateProof = function() {
               });
             }
 
-            // No user-provided white plate file — skip white plate panel
             delete result._rawBytes;
             return result;
           });
@@ -4111,6 +4213,7 @@ window.generateProof = function() {
       }
 
       var sheet = sheetPlan[sheetIdx];
+      var gm = sheet.front._groupMeta;
       var pct = Math.round((sheetIdx / totalSheets) * 100);
       progressBar.style.width = pct + '%';
       progressDetail.textContent = 'Sheet ' + (sheetIdx+1) + ' of ' + totalSheets + ': ' + sheet.front.filename;
@@ -4129,10 +4232,10 @@ window.generateProof = function() {
             pageLabel = desc + '  \u2014  Sheet ' + (sheetIdx+1) + ' of ' + totalSheets;
           }
 
-          var sheetQty = (sheet.front.perQty || '') || qty;
+          var sheetQty = (sheet.front.perQty || '') || gm.qty;
 
-          // Per-file scale: parse user input, fall back to global scale
-          var sheetScale = scale;
+          // Per-file scale: parse user input, fall back to group scale
+          var sheetScale = gm.scale;
           var sheetScaleRaw = '';
           var perScaleStr = sheet.front.perScale || '';
           if (perScaleStr) {
@@ -4142,8 +4245,8 @@ window.generateProof = function() {
 
           drawProofPage(doc, frontImg, {
             clientName: clientName, jobNumber: jobNumber, date: date, qty: sheetQty,
-            substrate: substrate, printType: printType, scale: sheetScale, scaleRaw: sheetScaleRaw, finishing: finishing,
-            notes: extraNotes,
+            substrate: gm.substrate, printType: gm.printType, scale: sheetScale, scaleRaw: sheetScaleRaw, finishing: gm.finishing,
+            notes: gm.notes,
             filename: sheet.front.filename, pageLabel: pageLabel, branded: branded,
             backImg: backImg,
             backFilename: sheet.back ? sheet.back.filename : '',
@@ -4156,10 +4259,8 @@ window.generateProof = function() {
           setTimeout(renderNextSheet, 10);
         }
 
-        // If double-sided and back page exists, render it too
         if (sheet.back) {
           if (sheet.sameArt) {
-            // Same art both sides — reuse front image as back
             finishSheet(frontImg);
           } else {
             getPageImage(sheet.back).then(function(backImg) {
@@ -4200,10 +4301,10 @@ window.generateProof = function() {
     }
 
     renderNextSheet();
-    } // end doBuildSheets
+    } // end buildSheets
   } // end processPages
 
-  readNextFile();
+  readNextFileFromGroups();
 };
 
 // ── PDF Preview Viewer (canvas-based with zoom/page/fullscreen) ──
@@ -4293,8 +4394,11 @@ window.resetForm = function() {
   if (viewer.classList.contains('fullscreen')) viewer.classList.remove('fullscreen');
   document.getElementById('pv-fullscreen').textContent = '⛶ Fullscreen';
   if (_pvPdf) { _pvPdf.destroy(); _pvPdf = null; }
-  allFiles = [];
-  renderFileList();
+  // Reset all substrate groups
+  substrateGroups = [];
+  _groupIdCounter = 0;
+  document.getElementById('substrate-groups').innerHTML = '';
+  createSubstrateGroup();
 };
 
 } catch(err) {
