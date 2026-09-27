@@ -877,7 +877,9 @@ function addAcceptedFilesToGroup(group, gid, fileArray) {
   Promise.all(pdfPromises).then(function(results) {
     var anyOpw = results.some(function(r) { return r; });
     renderGroupFileList(group, gid);
-    if (anyOpw) { showOpwBackModal(group, gid); }
+    // Only show OPW back modal if backs haven't already been added (e.g. via + Backs all pages)
+    var alreadyHasBacks = group.files.some(function(f) { return f.isOpwBack; });
+    if (anyOpw && !alreadyHasBacks) { showOpwBackModal(group, gid); }
   }).catch(function(e) {
     console.error('Error reading PDFs:', e);
     renderGroupFileList(group, gid);
@@ -905,7 +907,34 @@ function renderGroupFileList(group, gid) {
   updateGenBtnState();
   if (group.files.length === 0) { fileList.style.display = 'none'; return; }
   fileItems.innerHTML = '';
+  var lastSourceFile = null;
   group.files.forEach(function(entry, i) {
+    // File-level header for multi-page source files
+    var isMultiPage = entry.type === 'pdf' && entry.pdfTotalPages > 1 && !entry.isOpwBack;
+    if (isMultiPage && entry.file.name !== lastSourceFile) {
+      lastSourceFile = entry.file.name;
+      var allHaveWp = true;
+      for (var ci = 0; ci < group.files.length; ci++) {
+        if (group.files[ci].file.name === entry.file.name && !group.files[ci].isOpwBack && !group.files[ci].whitePlateFile) {
+          allHaveWp = false; break;
+        }
+      }
+      var header = document.createElement('div');
+      header.style.cssText = 'padding:4px 12px;background:#eef2ff;border-radius:8px 8px 0 0;margin-top:6px;font-size:11px;font-weight:600;color:#3730a3;display:flex;align-items:center;gap:8px;flex-wrap:wrap;';
+      var escapedName = entry.file.name.replace(/'/g, "\\'");
+      if (allHaveWp) {
+        header.innerHTML = '<span>\u{1F4C4} ' + entry.file.name + ' (' + entry.pdfTotalPages + ' pages)</span>' +
+          '<button class="wp-btn has-file" style="font-size:10px;" onclick="window._removeWhitePlateAll(' + gid + ',\'' + escapedName + '\')">\u2715 WP all</button>' +
+          '<button class="wp-btn" style="font-size:10px;border-color:#6366f1;color:#3730a3;" onclick="window._addBacksAll(' + gid + ',\'' + escapedName + '\')">+ Backs all pages</button>';
+      } else {
+        header.innerHTML = '<span>\u{1F4C4} ' + entry.file.name + ' (' + entry.pdfTotalPages + ' pages)</span>' +
+          '<button class="wp-btn" style="font-size:10px;" onclick="window._addWhitePlateAll(' + gid + ',\'' + escapedName + '\')">+ WP all pages</button>' +
+          '<button class="wp-btn" style="font-size:10px;border-color:#6366f1;color:#3730a3;" onclick="window._addBacksAll(' + gid + ',\'' + escapedName + '\')">+ Backs all pages</button>';
+      }
+      fileItems.appendChild(header);
+    } else if (!isMultiPage) {
+      lastSourceFile = null;
+    }
     var li = document.createElement('li');
     li.className = 'file-item';
     li.draggable = true;
@@ -928,8 +957,9 @@ function renderGroupFileList(group, gid) {
     if (!entry.isOpwBack) {
       if (entry.whitePlateFile) {
         var wpName = entry.whitePlateFile.name;
+        var wpPageLabel = entry.whitePlatePageNum && entry.whitePlatePageNum > 1 ? ' p' + entry.whitePlatePageNum : '';
         if (wpName.length > 16) wpName = wpName.substring(0, 13) + '\u2026';
-        wpBtnHtml = '<button class="wp-btn has-file" title="White plate: ' + entry.whitePlateFile.name + ' (click to change)" onclick="window._addWhitePlate(' + gid + ',' + i + ')">WP \u2713</button>';
+        wpBtnHtml = '<button class="wp-btn has-file" title="White plate: ' + entry.whitePlateFile.name + wpPageLabel + ' (click to change)" onclick="window._addWhitePlate(' + gid + ',' + i + ')">WP' + wpPageLabel + ' \u2713</button>';
       } else {
         wpBtnHtml = '<button class="wp-btn" title="Attach white plate file" onclick="window._addWhitePlate(' + gid + ',' + i + ')">+ WP</button>';
       }
@@ -1000,19 +1030,163 @@ var _wpTargetGid = -1, _wpTargetIdx = -1;
 window._addWhitePlate = function(gid, idx) {
   _wpTargetGid = gid;
   _wpTargetIdx = idx;
+  _wpBulkMode = false;
   _wpFileInput.value = '';
   _wpFileInput.click();
 };
+
+// Bulk white plate — assign multi-page PDF to all pages of a multi-page source file
+var _wpBulkMode = false;
+var _wpBulkSourceFile = null;
+window._addWhitePlateAll = function(gid, sourceFileName) {
+  _wpTargetGid = gid;
+  _wpTargetIdx = -1;
+  _wpBulkMode = true;
+  _wpBulkSourceFile = sourceFileName;
+  _wpFileInput.value = '';
+  _wpFileInput.click();
+};
+window._removeWhitePlateAll = function(gid, sourceFileName) {
+  var g = _findGroup(gid);
+  if (!g) return;
+  for (var i = 0; i < g.files.length; i++) {
+    if (g.files[i].file.name === sourceFileName) {
+      g.files[i].whitePlateFile = null;
+      g.files[i].whitePlatePageNum = null;
+    }
+  }
+  renderGroupFileList(g, gid);
+};
+
 _wpFileInput.addEventListener('change', function() {
-  if (_wpFileInput.files.length && _wpTargetGid >= 0) {
-    var g = _findGroup(_wpTargetGid);
-    if (g && g.files[_wpTargetIdx]) {
-      g.files[_wpTargetIdx].whitePlateFile = _wpFileInput.files[0];
+  if (!_wpFileInput.files.length || _wpTargetGid < 0) return;
+  var g = _findGroup(_wpTargetGid);
+  if (!g) { _wpTargetGid = -1; return; }
+
+  if (_wpBulkMode && _wpBulkSourceFile) {
+    // Bulk mode: assign white plate pages 1-to-1 to all pages of the source file
+    var wpFile = _wpFileInput.files[0];
+    var sourcePages = [];
+    for (var i = 0; i < g.files.length; i++) {
+      if (g.files[i].file.name === _wpBulkSourceFile) sourcePages.push(i);
+    }
+    if (isPdfFile(wpFile.name)) {
+      wpFile.arrayBuffer().then(function(buf) {
+        return pdfjsLib.getDocument({ data: buf }).promise.then(function(pdf) {
+          var wpPageCount = pdf.numPages;
+          pdf.destroy();
+          for (var j = 0; j < sourcePages.length; j++) {
+            var pgNum = Math.min(j + 1, wpPageCount);
+            g.files[sourcePages[j]].whitePlateFile = wpFile;
+            g.files[sourcePages[j]].whitePlatePageNum = pgNum;
+          }
+          renderGroupFileList(g, _wpTargetGid);
+        });
+      }).catch(function(e) { console.error('WP PDF error:', e); });
+    } else {
+      // Single raster — same image for all pages
+      for (var j = 0; j < sourcePages.length; j++) {
+        g.files[sourcePages[j]].whitePlateFile = wpFile;
+        g.files[sourcePages[j]].whitePlatePageNum = 1;
+      }
       renderGroupFileList(g, _wpTargetGid);
     }
+    _wpBulkMode = false;
+    _wpBulkSourceFile = null;
+  } else if (_wpTargetIdx >= 0 && g.files[_wpTargetIdx]) {
+    g.files[_wpTargetIdx].whitePlateFile = _wpFileInput.files[0];
+    g.files[_wpTargetIdx].whitePlatePageNum = 1;
+    renderGroupFileList(g, _wpTargetGid);
   }
   _wpTargetGid = -1;
   _wpTargetIdx = -1;
+});
+
+// ── Bulk Backs — add multi-page back PDF paired 1-to-1 with face pages ──
+var _backsAllFileInput = document.createElement('input');
+_backsAllFileInput.type = 'file';
+_backsAllFileInput.accept = '.pdf,.ai,.tif,.tiff,.jpg,.jpeg,.png';
+_backsAllFileInput.style.display = 'none';
+document.body.appendChild(_backsAllFileInput);
+var _backsAllGid = -1, _backsAllSourceFile = null;
+
+window._addBacksAll = function(gid, sourceFileName) {
+  _backsAllGid = gid;
+  _backsAllSourceFile = sourceFileName;
+  _backsAllFileInput.value = '';
+  _backsAllFileInput.click();
+};
+
+_backsAllFileInput.addEventListener('change', function() {
+  if (!_backsAllFileInput.files.length || _backsAllGid < 0) return;
+  var g = _findGroup(_backsAllGid);
+  if (!g) { _backsAllGid = -1; return; }
+  var backFile = _backsAllFileInput.files[0];
+  var sourceFileName = _backsAllSourceFile;
+  _backsAllGid = -1;
+  _backsAllSourceFile = null;
+  var gid = g.id;
+
+  // Find indices of the source file's face pages (non-OPW-back entries)
+  var faceIndices = [];
+  for (var i = 0; i < g.files.length; i++) {
+    if (g.files[i].file.name === sourceFileName && !g.files[i].isOpwBack) {
+      faceIndices.push(i);
+    }
+  }
+  if (faceIndices.length === 0) return;
+
+  if (isPdfFile(backFile.name)) {
+    backFile.arrayBuffer().then(function(buf) {
+      var bufCopy = buf.slice(0);
+      return pdfjsLib.getDocument({ data: bufCopy }).promise.then(function(pdf) {
+        var n = pdf.numPages;
+        pdf.destroy();
+        // Insert back pages after each face page, in reverse order to preserve indices
+        var insertions = [];
+        for (var j = 0; j < faceIndices.length; j++) {
+          var backPageNum = Math.min(j + 1, n);
+          insertions.push({
+            afterIdx: faceIndices[j],
+            entry: { file: backFile, type: 'pdf', pdfPageNum: backPageNum, pdfTotalPages: n, isOpwBack: true }
+          });
+        }
+        // Insert in reverse to keep indices valid
+        for (var k = insertions.length - 1; k >= 0; k--) {
+          g.files.splice(insertions[k].afterIdx + 1, 0, insertions[k].entry);
+        }
+        // Enable double-sided if needed
+        var printInput = document.getElementById('sg-print-' + gid);
+        if (printInput) {
+          var curVal = printInput.value.trim().toLowerCase();
+          if (curVal.indexOf('1/1') < 0 && curVal.indexOf('4/4') < 0 && curVal.indexOf('double') < 0) {
+            // Change 4/0 → 4/4, or set to 4/4 if empty
+            if (/^4\/0/.test(curVal)) {
+              printInput.value = printInput.value.replace(/4\/0/, '4/4');
+            } else {
+              printInput.value = '4/4';
+            }
+          }
+        }
+        // Uncheck "same art" if checked
+        var dblSame = document.getElementById('sg-dblsame-' + gid);
+        if (dblSame) dblSame.checked = false;
+        renderGroupFileList(g, gid);
+      });
+    }).catch(function(e) { console.error('Backs PDF error:', e); });
+  } else if (isRasterFile(backFile.name)) {
+    processRasterFile(backFile).then(function(entry) {
+      if (!entry) return;
+      entry.isOpwBack = true;
+      // Insert same raster after each face page
+      for (var j = faceIndices.length - 1; j >= 0; j--) {
+        var clone = {};
+        for (var k in entry) { if (entry.hasOwnProperty(k)) clone[k] = entry[k]; }
+        g.files.splice(faceIndices[j] + 1, 0, clone);
+      }
+      renderGroupFileList(g, gid);
+    }).catch(function(e) { console.error('Backs raster error:', e); });
+  }
 });
 
 // Add substrate button
@@ -1087,13 +1261,19 @@ function showOpwBackModal(group, gid) {
     _opwBackFile = null;
     _opwBackGroup = null;
 
-    function doInterleave(backEntry) {
+    function doInterleave(backEntry, backPageCount) {
       var newFiles = [];
+      var opwIdx = 0;
       for (var i = 0; i < group.files.length; i++) {
         newFiles.push(group.files[i]);
         if (group.files[i].hasOpw) {
           var clone = {};
           for (var k in backEntry) { if (backEntry.hasOwnProperty(k)) clone[k] = backEntry[k]; }
+          // For multi-page back PDFs, assign page 1-to-1
+          if (backPageCount > 1 && clone.type === 'pdf') {
+            clone.pdfPageNum = Math.min(opwIdx + 1, backPageCount);
+          }
+          opwIdx++;
           newFiles.push(clone);
         }
       }
@@ -1108,14 +1288,14 @@ function showOpwBackModal(group, gid) {
           var n = pdf.numPages;
           pdf.destroy();
           var backEntry = { file: backFile, type: 'pdf', pdfPageNum: 1, pdfTotalPages: n, isOpwBack: true };
-          doInterleave(backEntry);
+          doInterleave(backEntry, n);
         });
       }).catch(function(e) { console.error('Back PDF error:', e); });
     } else if (isRasterFile(backFile.name)) {
       processRasterFile(backFile).then(function(entry) {
         if (entry) {
           entry.isOpwBack = true;
-          doInterleave(entry);
+          doInterleave(entry, 1);
         }
       }).catch(function(e) { console.error('Back raster error:', e); });
     }
@@ -2291,20 +2471,61 @@ function showSpotColorClassification(spotColors) {
 
 // ── Load user-provided white plate file into a thumbnail ──
 // Accepts TIF, JPG, PNG, PDF, AI. Returns promise of { dataUrl, width, height, spotName }
-function loadWhitePlateFile(file) {
+// For multi-page PDFs, pass pageNum (1-based) to render a specific page.
+function loadWhitePlateFile(file, pageNum) {
   var lower = file.name.toLowerCase();
   var isTiff = lower.endsWith('.tif') || lower.endsWith('.tiff');
   var isPdf = lower.endsWith('.pdf') || lower.endsWith('.ai');
+  var pg = pageNum || 1;
 
   if (isPdf) {
-    // Render page 1 of the PDF/AI as grayscale thumbnail
+    // Render specified page of the PDF/AI as grayscale thumbnail
+    // Use slice() to give pdf.js a truly independent buffer each call
+    // Also extract the Separation tint color (C1 CMYK values) from raw bytes
     return file.arrayBuffer().then(function(buf) {
-      return pdfjsLib.getDocument({ data: buf }).promise.then(function(pdf) {
-        return pdf.getPage(1).then(function(page) {
-          var vp = page.getViewport({ scale: 0.5 });
-          var maxPx = 600;
-          var s = Math.min(1, maxPx / Math.max(vp.width, vp.height));
-          if (s < 1) vp = page.getViewport({ scale: 0.5 * s });
+      // Extract tint color from Separation colorspace in raw bytes
+      var tintColor = null;
+      var spotName = null;
+      try {
+        var raw = new TextDecoder('latin1').decode(new Uint8Array(buf.slice(0, Math.min(buf.byteLength, 65536))));
+        // Look for /Separation /Name /DeviceCMYK << ... /C1 [ c m y k ] >>
+        // PDF writers vary on whitespace: some use spaces, some don't
+        var sepMatch = raw.match(/\/Separation\s*\/(\S+?)\s*\/DeviceCMYK\s*<<[^>]*\/C1\s*\[\s*([\d.\s]+)\]/);
+        if (!sepMatch) {
+          // Try alternate format without brackets: /C1[0.0 0.0 0.0 1.0]
+          sepMatch = raw.match(/\/Separation\s*\/(\S+?)\s*\/DeviceCMYK\s*<</);
+          if (sepMatch) {
+            var afterSep = raw.substring(sepMatch.index, sepMatch.index + 500);
+            var c1m = afterSep.match(/\/C1\s*\[\s*([\d.\s]+)\]/);
+            if (c1m) {
+              sepMatch = [null, sepMatch[1], c1m[1]];
+            } else {
+              sepMatch = null;
+            }
+          }
+        }
+        if (sepMatch) {
+          spotName = sepMatch[1];
+          var vals = sepMatch[2].trim().split(/\s+/).map(Number);
+          if (vals.length >= 4) {
+            var r = Math.round(255 * (1 - vals[0]) * (1 - vals[3]));
+            var g = Math.round(255 * (1 - vals[1]) * (1 - vals[3]));
+            var b = Math.round(255 * (1 - vals[2]) * (1 - vals[3]));
+            tintColor = '#' + ('0'+r.toString(16)).slice(-2) + ('0'+g.toString(16)).slice(-2) + ('0'+b.toString(16)).slice(-2);
+          }
+        }
+      } catch(e) { /* ignore tint extraction errors */ }
+
+      var bufCopy = buf.slice(0);
+      return pdfjsLib.getDocument({ data: bufCopy, disableAutoFetch: true }).promise.then(function(pdf) {
+        var actualPage = Math.min(pg, pdf.numPages);
+        return pdf.getPage(actualPage).then(function(page) {
+          // Use a moderate render scale: these OPW plates can be 28"x40" (2000x2900pt)
+          // Render at 72 DPI equivalent (scale 1.0) then downsample — avoids pdf.js large-canvas issues
+          var baseVp = page.getViewport({ scale: 1.0 });
+          var maxPx = 800;
+          var renderScale = Math.min(1.0, maxPx / Math.max(baseVp.width, baseVp.height));
+          var vp = page.getViewport({ scale: renderScale });
           var canvas = document.createElement('canvas');
           canvas.width = vp.width; canvas.height = vp.height;
           var ctx = canvas.getContext('2d');
@@ -2318,11 +2539,28 @@ function loadWhitePlateFile(file) {
               d[i] = gray; d[i+1] = gray; d[i+2] = gray;
             }
             ctx.putImageData(imgData, 0, 0);
-            return { dataUrl: canvas.toDataURL('image/jpeg', 0.85), width: canvas.width, height: canvas.height };
+            var result = { dataUrl: canvas.toDataURL('image/jpeg', 0.85), width: canvas.width, height: canvas.height };
+            if (tintColor) result.tintColor = tintColor;
+            if (spotName) result.spotName = spotName;
+            return result;
           });
         });
       });
-    }).catch(function(e) { console.warn('WP PDF load failed:', e); return null; });
+    }).catch(function(e) {
+      console.warn('WP PDF load failed:', e);
+      // Fallback: create a placeholder white plate thumbnail so the layout still widens
+      var fallbackCanvas = document.createElement('canvas');
+      fallbackCanvas.width = 200; fallbackCanvas.height = 300;
+      var fctx = fallbackCanvas.getContext('2d');
+      fctx.fillStyle = '#e0e0e0';
+      fctx.fillRect(0, 0, 200, 300);
+      fctx.fillStyle = '#888';
+      fctx.font = '14px sans-serif';
+      fctx.textAlign = 'center';
+      fctx.fillText('White Plate', 100, 140);
+      fctx.fillText('(preview unavailable)', 100, 160);
+      return { dataUrl: fallbackCanvas.toDataURL('image/jpeg', 0.85), width: 200, height: 300 };
+    });
   }
 
   if (isTiff && typeof UTIF !== 'undefined') {
@@ -3405,10 +3643,15 @@ function drawProofPage(doc, frontImg, opts) {
       if (panel.type === 'wp') {
         doc.setDrawColor('#cccccc'); doc.setLineWidth(0.005);
         doc.rect(panelX, centerY, drawW, drawH);
-        // White plate legend
+        // White plate legend with tint color swatch
+        var wpTint = panel.tintColor || '#00BFFF';
+        doc.setFillColor(wpTint);
+        doc.rect(panelX, centerY - 0.14, 0.1, 0.1, 'F');
+        doc.setDrawColor('#999999'); doc.setLineWidth(0.003);
+        doc.rect(panelX, centerY - 0.14, 0.1, 0.1);
         doc.setFont('helvetica', 'bold'); doc.setFontSize(6.5);
         doc.setTextColor(BLACK);
-        doc.text('\u25a0 = White Ink (' + panel.spotName + ')', panelX, centerY - 0.06);
+        doc.text(' = White Ink (' + panel.spotName + ')', panelX + 0.13, centerY - 0.06);
       } else if (panel.hasWhiteEdges) {
         doc.setDrawColor(ACCENT); doc.setLineWidth(0.007);
         doc.rect(panelX, centerY, drawW, drawH);
@@ -3573,10 +3816,16 @@ function drawProofPage(doc, frontImg, opts) {
     doc.text('WHITE PLATE', wpX + drawW/2, centerY + drawH + 0.16, { align: 'center' });
     doc.text('FRONT', frontX + drawW/2, centerY + drawH + 0.16, { align: 'center' });
 
-    // Spot name under white plate label
+    // Spot name under white plate label with tint swatch
+    var wpTintSS = wpt.tintColor || '#00BFFF';
+    var swatchX = wpX + drawW/2 - 0.35;
+    doc.setFillColor(wpTintSS);
+    doc.rect(swatchX, centerY + drawH + 0.2, 0.1, 0.1, 'F');
+    doc.setDrawColor('#999999'); doc.setLineWidth(0.003);
+    doc.rect(swatchX, centerY + drawH + 0.2, 0.1, 0.1);
     doc.setFont('helvetica', 'bold'); doc.setFontSize(6.5);
     doc.setTextColor(BLACK);
-    doc.text('\u25a0 = White Ink (' + wpt.spotName + ')', wpX + drawW/2, centerY + drawH + 0.28, { align: 'center' });
+    doc.text(' = White Ink (' + wpt.spotName + ')', swatchX + 0.13, centerY + drawH + 0.28);
 
     // Dimension arrows on front panel
     doc.setDrawColor(BLACK); doc.setLineWidth(0.007);
@@ -3687,7 +3936,6 @@ function drawProofPage(doc, frontImg, opts) {
       if (isWhite) {
         // White plate swatch — use file's tint color, fall back to 50% cyan
         var wpSwatchColor = sp.tintColor || '#00BFFF';
-        if (wpSwatchColor === '#ffffff' || wpSwatchColor === '#000000') wpSwatchColor = '#00BFFF';
         doc.setFillColor(wpSwatchColor);
         doc.rect(xCursor, legendY, 0.12, 0.12, 'F');
         doc.setDrawColor('#999999'); doc.setLineWidth(0.003);
@@ -4031,6 +4279,7 @@ window.generateProof = function() {
         type: 'raster', filename: entry.file.name, totalPages: 1, pageNum: 1,
         rasterMeta: rm, perQty: entry.perQty || '', perScale: entry.perScale || '',
         isOpwBack: entry.isOpwBack || false, whitePlateFile: entry.whitePlateFile || null,
+        whitePlatePageNum: entry.whitePlatePageNum || 1,
         _groupMeta: groupMeta
       });
     } else {
@@ -4039,6 +4288,7 @@ window.generateProof = function() {
         filename: entry.file.name, totalPages: entry.pdfTotalPages || 1,
         perQty: entry.perQty || '', perScale: entry.perScale || '',
         isOpwBack: entry.isOpwBack || false, whitePlateFile: entry.whitePlateFile || null,
+        whitePlatePageNum: entry.whitePlatePageNum || 1,
         _groupMeta: groupMeta
       });
     }
@@ -4135,9 +4385,10 @@ window.generateProof = function() {
           rasterInfo: { dpi: rm.dpi, pixW: rm.pixW, pixH: rm.pixH, bleed: rm.bleed }
         };
         if (item.whitePlateFile) {
-          return loadWhitePlateFile(item.whitePlateFile).then(function(thumb) {
+          return loadWhitePlateFile(item.whitePlateFile, item.whitePlatePageNum).then(function(thumb) {
             if (thumb) {
-              thumb.spotName = item.whitePlateFile.name;
+              // Prefer spot name from the PDF's Separation CS, fall back to filename
+              if (!thumb.spotName) thumb.spotName = item.whitePlateFile.name;
               rasterResult.whitePlateThumb = thumb;
             }
             return rasterResult;
@@ -4147,6 +4398,20 @@ window.generateProof = function() {
       } else {
         return renderPdfPageToImage(item.file, item.pageNum).then(function(result) {
           var classifyPromise;
+          // If white plate file is already attached (via + WP all pages), auto-classify
+          // white spots without showing the file picker for them
+          if (item.whitePlateFile && result.spotColors) {
+            result.spotColors.forEach(function(sc) {
+              if (sc.needsClassification) {
+                var rawLower = sc.rawName.replace(/[\s_-]/g, '').toLowerCase();
+                if (/^(opw\d*|white|spotwhite|whiteink|opaquewhite)$/.test(rawLower)) {
+                  sc.type = 'white';
+                  sc.needsClassification = false;
+                  _spotClassificationCache[sc.key] = { type: 'white' };
+                }
+              }
+            });
+          }
           if (result.spotColors && result.spotColors.some(function(sc) { return sc.needsClassification; })) {
             progressOverlay.classList.remove('active');
             classifyPromise = showSpotColorClassification(result.spotColors).then(function(classified) {
@@ -4159,9 +4424,10 @@ window.generateProof = function() {
 
           return classifyPromise.then(function() {
             if (item.whitePlateFile) {
-              return loadWhitePlateFile(item.whitePlateFile).then(function(thumb) {
+              return loadWhitePlateFile(item.whitePlateFile, item.whitePlatePageNum).then(function(thumb) {
                 if (thumb) {
-                  thumb.spotName = item.whitePlateFile.name;
+                  // Prefer spot name from the PDF's Separation CS, then from CMYK file's white spot, then filename
+                  if (!thumb.spotName) thumb.spotName = item.whitePlateFile.name;
                   if (result.spotColors) {
                     result.spotColors.forEach(function(sc) {
                       if (sc.type === 'white') thumb.spotName = sc.rawName;
