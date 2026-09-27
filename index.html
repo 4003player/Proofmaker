@@ -954,6 +954,7 @@ function renderGroupFileList(group, gid) {
     var savedQty = entry.perQty || '';
     var savedScale = entry.perScale || '';
     var wpBtnHtml = '';
+    var backBtnHtml = '';
     if (!entry.isOpwBack) {
       if (entry.whitePlateFile) {
         var wpName = entry.whitePlateFile.name;
@@ -963,11 +964,21 @@ function renderGroupFileList(group, gid) {
       } else {
         wpBtnHtml = '<button class="wp-btn" title="Attach white plate file" onclick="window._addWhitePlate(' + gid + ',' + i + ')">+ WP</button>';
       }
+      // Check if the next entry is already a back for this face
+      var hasBackNext = (i + 1 < group.files.length && group.files[i + 1].isOpwBack);
+      if (hasBackNext) {
+        var backName = group.files[i + 1].file.name;
+        if (backName.length > 14) backName = backName.substring(0, 11) + '\u2026';
+        backBtnHtml = '<button class="wp-btn has-file" title="Back: ' + group.files[i + 1].file.name + ' (click to change)" style="border-color:#6366f1;color:#3730a3;" onclick="window._addBackForFile(' + gid + ',' + i + ')">Back \u2713</button>';
+      } else {
+        backBtnHtml = '<button class="wp-btn" title="Attach backside file" style="border-color:#6366f1;color:#3730a3;" onclick="window._addBackForFile(' + gid + ',' + i + ')">+ Back</button>';
+      }
     }
     li.innerHTML = '<span class="drag-handle" title="Drag to reorder">\u2261</span>' +
       '<span class="name">' + displayName + badge + '</span>' +
       '<span class="info">' + infoText + '</span>' +
       wpBtnHtml +
+      backBtnHtml +
       '<input type="text" class="qty-input" placeholder="Scale" title="Per-file scale override (e.g. 1/4, 65%)" value="' + savedScale + '" onchange="window._setFileScale(' + gid + ',' + i + ', this.value)" oninput="window._setFileScale(' + gid + ',' + i + ', this.value)" style="width:56px;">' +
       '<input type="text" class="qty-input" placeholder="Qty" value="' + savedQty + '" onchange="window._setFileQty(' + gid + ',' + i + ', this.value)" oninput="window._setFileQty(' + gid + ',' + i + ', this.value)">' +
       '<button class="remove" onclick="window._removeFile(' + gid + ',' + i + ')">&#10005;</button>';
@@ -1100,6 +1111,76 @@ _wpFileInput.addEventListener('change', function() {
   }
   _wpTargetGid = -1;
   _wpTargetIdx = -1;
+});
+
+// ── Per-file Back — attach a single back to a specific face file ──
+var _backFileInput = document.createElement('input');
+_backFileInput.type = 'file';
+_backFileInput.accept = '.pdf,.ai,.tif,.tiff,.jpg,.jpeg,.png';
+_backFileInput.style.display = 'none';
+document.body.appendChild(_backFileInput);
+var _backTargetGid = -1, _backTargetIdx = -1;
+
+window._addBackForFile = function(gid, idx) {
+  _backTargetGid = gid;
+  _backTargetIdx = idx;
+  _backFileInput.value = '';
+  _backFileInput.click();
+};
+
+_backFileInput.addEventListener('change', function() {
+  if (!_backFileInput.files.length || _backTargetGid < 0) return;
+  var g = _findGroup(_backTargetGid);
+  var faceIdx = _backTargetIdx;
+  var gid = _backTargetGid;
+  _backTargetGid = -1;
+  _backTargetIdx = -1;
+  if (!g || !g.files[faceIdx]) return;
+
+  var backFile = _backFileInput.files[0];
+
+  // If there's already a back after this face, replace it
+  var existingBackIdx = faceIdx + 1;
+  var hasExistingBack = (existingBackIdx < g.files.length && g.files[existingBackIdx].isOpwBack);
+
+  function insertBack(backEntry) {
+    backEntry.isOpwBack = true;
+    if (hasExistingBack) {
+      g.files[existingBackIdx] = backEntry;
+    } else {
+      g.files.splice(faceIdx + 1, 0, backEntry);
+    }
+    // Auto-set print to double-sided
+    var printInput = document.getElementById('sg-print-' + gid);
+    if (printInput) {
+      var curVal = printInput.value.trim().toLowerCase();
+      if (curVal.indexOf('1/1') < 0 && curVal.indexOf('4/4') < 0 && curVal.indexOf('double') < 0) {
+        if (/^4\/0/.test(curVal)) {
+          printInput.value = printInput.value.replace(/4\/0/, '4/4');
+        } else {
+          printInput.value = '4/4';
+        }
+      }
+    }
+    var dblSame = document.getElementById('sg-dblsame-' + gid);
+    if (dblSame) dblSame.checked = false;
+    renderGroupFileList(g, gid);
+  }
+
+  if (isPdfFile(backFile.name)) {
+    backFile.arrayBuffer().then(function(buf) {
+      var bufCopy = buf.slice(0);
+      return pdfjsLib.getDocument({ data: bufCopy }).promise.then(function(pdf) {
+        var n = pdf.numPages;
+        pdf.destroy();
+        insertBack({ file: backFile, type: 'pdf', pdfPageNum: 1, pdfTotalPages: n });
+      });
+    }).catch(function(e) { console.error('Back PDF error:', e); });
+  } else if (isRasterFile(backFile.name)) {
+    processRasterFile(backFile).then(function(entry) {
+      if (entry) insertBack(entry);
+    }).catch(function(e) { console.error('Back raster error:', e); });
+  }
 });
 
 // ── Bulk Backs — add multi-page back PDF paired 1-to-1 with face pages ──
