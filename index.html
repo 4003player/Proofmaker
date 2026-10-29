@@ -1963,20 +1963,27 @@ function getToday() {
 // ── Spot color name → display color mapping ──
 // These are the conventional colors designers use for die/finishing lines
 var SPOT_COLOR_MAP = {
-  'cutcontour': { color: '#FF0000', label: 'CutContour' },
-  'thrucut': { color: '#FF0000', label: 'ThruCut' },
-  'kisscut': { color: '#00FF00', label: 'KissCut' },
+  'cutcontour': { color: '#3953A4', label: 'CutContour' },
+  'vcut': { color: '#3953A4', label: 'V-cut' },
+  'bevelcut': { color: '#145724', label: 'Bevel-cut' },
+  'route': { color: '#322B70', label: 'Route' },
+  'router': { color: '#322B70', label: 'Router' },
+  'engrave': { color: '#CFD935', label: 'Engrave' },
+  'drill': { color: '#1D5A85', label: 'Drill' },
+  'punch': { color: '#609ED5', label: 'Punch' },
+  'thrucut': { color: '#3953A4', label: 'Thru-cut' },
+  'kisscut': { color: '#EE322B', label: 'Kiss-cut' },
   'die': { color: '#FF00FF', label: 'Die' },
   'dieline': { color: '#FF00FF', label: 'Die Line' },
   'diecut': { color: '#FF00FF', label: 'DieCut' },
-  'score': { color: '#00FF00', label: 'Score' },
-  'crease': { color: '#00FF00', label: 'Crease' },
+  'score': { color: '#A91D22', label: 'Score' },
+  'crease': { color: '#19B24B', label: 'Crease' },
   'fold': { color: '#0000FF', label: 'Fold' },
   'perf': { color: '#FF8800', label: 'Perf' },
   'perfcut': { color: '#FF8800', label: 'PerfCut' },
-  'trim': { color: '#FF0000', label: 'Trim' },
-  'cutter': { color: '#FF0000', label: 'Cutter' },
-  'cut': { color: '#FF0000', label: 'Cut' },
+  'trim': { color: '#3953A4', label: 'Trim' },
+  'cutter': { color: '#3953A4', label: 'Cutter' },
+  'cut': { color: '#3953A4', label: 'Cut' },
   'safetyline': { color: '#00CCFF', label: 'Safety Line' },
   'bleed': { color: '#FF6600', label: 'Bleed' }
 };
@@ -3678,6 +3685,41 @@ function drawProofPage(doc, frontImg, opts) {
     }
   }
 
+  // ── Zünd Cut Color Reference (shown when die line is detected) ──
+  if (hasDieLine) {
+    y += 0.25;
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(8);
+    doc.setTextColor(BLACK);
+    doc.text('Z\u00fcnd Cut Colors', rpX, y + 0.1);
+    y += 0.2;
+    var zundColors = [
+      { name: 'Thru-cut',   r:57,  g:83,  b:164 },
+      { name: 'Kiss-cut',   r:238, g:50,  b:43  },
+      { name: 'Crease',     r:25,  g:178, b:75  },
+      { name: 'Score',      r:169, g:29,  b:34  },
+      { name: 'Route',      r:50,  g:43,  b:112 },
+      { name: 'Engrave',    r:207, g:217, b:53  },
+      { name: 'V-cut',      r:103, g:108, b:46  },
+      { name: 'Bevel-cut',  r:20,  g:87,  b:44  },
+      { name: 'Drill',      r:29,  g:90,  b:133 },
+      { name: 'Punch',      r:96,  g:158, b:213 },
+      { name: 'Register',   r:0,   g:0,   b:0   }
+    ];
+    var zCol1X = rpX;
+    var zCol2X = rpX + 1.4;
+    for (var zi = 0; zi < zundColors.length; zi++) {
+      var zc = zundColors[zi];
+      var zx = zi % 2 === 0 ? zCol1X : zCol2X;
+      var zy = y + Math.floor(zi / 2) * 0.16;
+      doc.setFillColor(zc.r, zc.g, zc.b);
+      doc.rect(zx, zy, 0.1, 0.1, 'F');
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(6.5);
+      doc.setTextColor(GRAY);
+      doc.text(zc.name, zx + 0.14, zy + 0.08);
+    }
+    y += Math.ceil(zundColors.length / 2) * 0.16 + 0.05;
+  }
+
   // ══════════════════════════════════════════════════
   // ── Artwork Section ──
   // ══════════════════════════════════════════════════
@@ -4006,7 +4048,7 @@ function drawProofPage(doc, frontImg, opts) {
 
   if (spots.length > 0) {
     // Draw a legend swatch for each detected spot color
-    var dieKeys = ['cutcontour','thrucut','die','dieline','diecut','trim','cutter','cut'];
+    var dieKeys = ['cutcontour','thrucut','kisscut','die','dieline','diecut','trim','cutter','cut','vcut','bevelcut','route','router','engrave','drill','punch','score','crease','fold','perf','perfcut'];
     var xCursor = legendX;
     for (var si = 0; si < spots.length; si++) {
       var sp = spots[si];
